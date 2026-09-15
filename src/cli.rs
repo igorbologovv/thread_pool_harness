@@ -1,4 +1,4 @@
-use std::{fmt, num::NonZeroUsize};
+use std::{fmt, num::NonZeroUsize, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
 
@@ -32,6 +32,13 @@ pub struct Cli {
     /// Number of measured benchmark runs.
     #[arg(long, default_value = "50")]
     pub runs: NonZeroUsize,
+    /// FIFO used to send measurement-control commands to perf.
+    #[arg(long)]
+    pub perf_control: Option<PathBuf>,
+
+    /// FIFO used to receive acknowledgements from perf.
+    #[arg(long)]
+    pub perf_ack: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

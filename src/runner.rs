@@ -1,6 +1,9 @@
 use std::num::NonZeroUsize;
 
-use crate::result::RunResult;
+use crate::{
+    perf_control::PerfControl,
+    result::RunResult,
+};
 
 /// Executes warm-up runs followed by measured benchmark runs.
 ///
@@ -9,6 +12,7 @@ use crate::result::RunResult;
 pub fn run_repeated<F>(
     warmup_runs: usize,
     measured_runs: NonZeroUsize,
+    mut perf: Option<&mut PerfControl>,
     mut run_once: F,
 ) -> Vec<RunResult>
 where
@@ -16,6 +20,12 @@ where
 {
     for _ in 0..warmup_runs {
         run_once();
+    }
+
+    if let Some(control) = perf.as_deref_mut() {
+        control
+            .enable()
+            .expect("failed to enable perf counters");
     }
 
     let mut results = Vec::with_capacity(measured_runs.get());
@@ -34,6 +44,12 @@ where
         );
 
         results.push(result);
+    }
+
+    if let Some(control) = perf.as_deref_mut() {
+        control
+            .disable()
+            .expect("failed to disable perf counters");
     }
 
     results
