@@ -6,6 +6,11 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use super::{CommonWorkloadConfig, Workload};
 
 const MATRIX_SIZE: usize = 8;
+
+/// Scales matrix products to keep values numerically bounded across many rounds.
+///
+/// Each output element of an NxN matrix multiplication is a sum of N products,
+/// so scaling by 1/N helps prevent values from growing toward infinity.
 const MATRIX_SCALE: f64 = 1.0 / MATRIX_SIZE as f64;
 
 type Matrix = SMatrix<f64, MATRIX_SIZE, MATRIX_SIZE>;
@@ -15,23 +20,22 @@ type Matrix = SMatrix<f64, MATRIX_SIZE, MATRIX_SIZE>;
 pub struct ComputeHeavyConfig {
     /// Number of matrix-multiplication rounds performed by each work unit.
     ///
-    /// Increasing this value increases work-unit granularity without
-    /// increasing the working-set size.
+    /// Increasing this value increases the compute depth of each work unit
+    /// without increasing its input size.
     pub rounds: usize,
 }
 
-/// Synthetic compute-heavy workload.
+/// Synthetic workload intended to produce compute-intensive CPU work.
 ///
 /// The workload consists of independent work units operating on small dense
-/// matrices. The matrices are intentionally small so that the working set
-/// remains cache-resident while repeated multiplication produces a large
-/// amount of arithmetic work.
+/// matrices. Repeated multiplication increases the amount of arithmetic work
+/// performed on each work unit while keeping its input size fixed.
 pub struct ComputeHeavyWorkload {
     work_units: Vec<ComputeHeavyWorkUnit>,
     rounds: usize,
 }
 
-/// One independently schedulable unit of compute-heavy work.
+/// One independently processable unit of compute-heavy work.
 #[derive(Debug)]
 pub struct ComputeHeavyWorkUnit {
     left: Matrix,
@@ -71,15 +75,24 @@ impl Workload for ComputeHeavyWorkload {
     fn work_units(&self) -> &[Self::WorkUnit] {
         &self.work_units
     }
-
+    // Clippy prefers value-based matrix operations here, but release assembly
+    // showed that this introduces a full 512-byte copy of `unit.right` on
+    // every round. References are used deliberately to avoid that hot-path copy.
+    #[allow(clippy::op_ref)]
     fn execute(&self, unit: &Self::WorkUnit) -> u64 {
         let mut current = unit.left;
 
         for _ in 0..self.rounds {
-            let product = current * unit.right;
-            current = product * MATRIX_SCALE + unit.left;
+            // Use reference-based matrix operations deliberately. Passing the
+            // matrices by value can introduce full 512-byte matrix copies in
+            // the generated hot loop.
+            let product = &current * &unit.right;
+
+            current = product * MATRIX_SCALE + &unit.left;
         }
 
+        // Make the complete result observable before extracting the cheap
+        // control value used by the scheduler-level checksum.
         let current = black_box(current);
 
         current[(0, 0)].to_bits()

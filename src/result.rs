@@ -1,23 +1,34 @@
-//! Results produced by a single benchmark run.
-//!
-//! This structure contains only metrics measured by the benchmark harness
-//! itself. Hardware and operating-system counters are collected externally
-//! with `perf`.
+use std::fmt;
 
-#[derive(Debug, Clone)]
+/// Results produced by a single benchmark run.
+#[derive(Debug)]
 pub struct RunResult {
-    /// Number of work items processed during the run.
-    pub completed_items: u64,
+    /// Number of work units completed during the run.
+    pub completed_work_units: u64,
 
     /// Wall-clock time spent executing the workload, in nanoseconds.
     pub elapsed_ns: u64,
 
-    /// Number of completed work items per second.
-    pub items_per_second: f64,
+    /// Number of completed work units per second.
+    pub work_units_per_second: f64,
 
-    /// Deterministic result produced by the workload.
-    ///
-    /// Used to verify that every scheduler executed the same work and that
-    /// the compiler did not eliminate the computation.
+    /// Deterministic control value aggregated from all work-unit results.
     pub checksum: u64,
+}
+
+impl fmt::Display for RunResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Completed work units : {}", self.completed_work_units)?;
+        writeln!(
+            f,
+            "Elapsed              : {:.3} ms",
+            self.elapsed_ns as f64 / 1_000_000.0
+        )?;
+        writeln!(
+            f,
+            "Throughput           : {:.2} work units/s",
+            self.work_units_per_second
+        )?;
+        write!(f, "Checksum             : {}", self.checksum)
+    }
 }
