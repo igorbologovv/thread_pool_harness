@@ -1,3 +1,10 @@
+mod cli;
+mod config;
+mod result;
+mod schedulers;
+mod storage;
+mod workload;
+
 fn main() {
-    println!("Hello, world!");
+    // Benchmark harness entry point.
 }
