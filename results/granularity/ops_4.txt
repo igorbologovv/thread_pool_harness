@@ -1,0 +1,8 @@
+Runs              : 50
+Mean elapsed      : 1.479 ms
+Median elapsed    : 1.311 ms
+Std deviation     : 0.318 ms
+Min elapsed       : 1.160 ms
+Max elapsed       : 2.493 ms
+Median throughput : 12493595.94 work units/s
+Checksum          : 18125866815560920608

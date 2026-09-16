@@ -1,9 +1,6 @@
 use std::num::NonZeroUsize;
 
-use crate::{
-    perf_control::PerfControl,
-    result::RunResult,
-};
+use crate::{perf_control::PerfControl, result::RunResult};
 
 /// Executes warm-up runs followed by measured benchmark runs.
 ///
@@ -23,9 +20,7 @@ where
     }
 
     if let Some(control) = perf.as_deref_mut() {
-        control
-            .enable()
-            .expect("failed to enable perf counters");
+        control.enable().expect("failed to enable perf counters");
     }
 
     let mut results = Vec::with_capacity(measured_runs.get());
@@ -47,9 +42,7 @@ where
     }
 
     if let Some(control) = perf.as_deref_mut() {
-        control
-            .disable()
-            .expect("failed to disable perf counters");
+        control.disable().expect("failed to disable perf counters");
     }
 
     results

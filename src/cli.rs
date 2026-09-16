@@ -17,9 +17,9 @@ pub struct Cli {
     #[arg(long)]
     pub work_units: NonZeroUsize,
 
-    /// Number of compute rounds performed by each work unit.
+    /// Number of independent matrix operations performed by each work unit.
     #[arg(long)]
-    pub rounds: NonZeroUsize,
+    pub operations_per_work_unit: NonZeroUsize,
 
     /// Seed used for deterministic workload generation.
     #[arg(long, default_value_t = 1)]

@@ -14,8 +14,8 @@ use runner::run_repeated;
 use schedulers::rayon::RayonScheduler;
 use summary::RunSummary;
 use workload::{
-    compute_heavy::{ComputeHeavyConfig, ComputeHeavyWorkload},
     CommonWorkloadConfig, Workload,
+    compute_heavy::{ComputeHeavyConfig, ComputeHeavyWorkload},
 };
 
 fn main() {
@@ -38,21 +38,17 @@ fn main() {
     match cli.workload {
         WorkloadKind::ComputeHeavy => {
             let workload_config = ComputeHeavyConfig {
-                rounds: cli.rounds.get(),
+                operations_per_work_unit: cli.operations_per_work_unit.get(),
             };
 
-            let workload =
-                ComputeHeavyWorkload::generate(&common_config, &workload_config);
+            let workload = ComputeHeavyWorkload::generate(&common_config, &workload_config);
 
             let scheduler =
                 RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
 
-            let results = run_repeated(
-                cli.warmup,
-                cli.runs,
-                perf.as_mut(),
-                || scheduler.run(&workload),
-            );
+            let results = run_repeated(cli.warmup, cli.runs, perf.as_mut(), || {
+                scheduler.run(&workload)
+            });
 
             let summary = RunSummary::from_results(&results);
 

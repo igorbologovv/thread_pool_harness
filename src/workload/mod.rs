@@ -1,16 +1,17 @@
 //! Workload definitions used by the benchmark harness.
 //!
 //! A workload owns its input dataset and defines the processing performed on
-//! each independently schedulable unit of work.
+//! each independently processable unit of work.
 //!
-//! Workloads are independent from the scheduler used to execute them.
+//! Workload generation happens outside the measured execution interval.
+//! Scheduling and thread management are deliberately kept outside this module.
 
 pub mod compute_heavy;
 
 /// Configuration shared by all workload implementations.
 #[derive(Debug, Clone)]
 pub struct CommonWorkloadConfig {
-    /// Number of independently schedulable work units.
+    /// Number of independently processable work units exposed by the workload.
     pub work_units: usize,
 
     /// Seed used for deterministic dataset generation.
@@ -21,12 +22,16 @@ pub struct CommonWorkloadConfig {
 ///
 /// A workload is responsible for:
 /// - generating its input dataset;
-/// - exposing independently schedulable work units;
+/// - exposing independently processable work units;
 /// - defining the processing performed on one work unit.
 ///
 /// Scheduling and thread management are deliberately kept outside this trait.
 pub trait Workload: Sync {
-    /// One independently schedulable unit of work.
+    /// One independently processable workload unit.
+    ///
+    /// This is a workload-level unit and does not necessarily correspond
+    /// one-to-one with an internal scheduling task created by a particular
+    /// thread-pool implementation.
     type WorkUnit: Sync;
 
     /// Configuration specific to this workload.
@@ -34,7 +39,7 @@ pub trait Workload: Sync {
 
     /// Generates the complete workload dataset.
     ///
-    /// `common` contains parameters shared by all workloads, while `config`
+    /// `common` contains parameters shared by workloads, while `config`
     /// contains parameters specific to this workload.
     ///
     /// Dataset generation happens before the measured execution interval.
@@ -42,7 +47,7 @@ pub trait Workload: Sync {
     where
         Self: Sized;
 
-    /// Returns all independently schedulable work units.
+    /// Returns all independently processable work units.
     fn work_units(&self) -> &[Self::WorkUnit];
 
     /// Executes one work unit and returns a deterministic control value.

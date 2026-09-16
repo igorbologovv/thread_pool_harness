@@ -1,4 +1,4 @@
-use std::hint::black_box;
+use std::{hint::black_box, ops::Range};
 
 use nalgebra::SMatrix;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
@@ -7,43 +7,48 @@ use super::{CommonWorkloadConfig, Workload};
 
 const MATRIX_SIZE: usize = 8;
 
-/// Scales matrix products to keep values numerically bounded across many rounds.
-///
-/// Each output element of an NxN matrix multiplication is a sum of N products,
-/// so scaling by 1/N helps prevent values from growing toward infinity.
-const MATRIX_SCALE: f64 = 1.0 / MATRIX_SIZE as f64;
-
 type Matrix = SMatrix<f64, MATRIX_SIZE, MATRIX_SIZE>;
 
 /// Configuration specific to the compute-heavy workload.
 #[derive(Debug)]
 pub struct ComputeHeavyConfig {
-    /// Number of matrix-multiplication rounds performed by each work unit.
+    /// Number of independent matrix multiplications contained in one work unit.
     ///
-    /// Increasing this value increases the compute depth of each work unit
-    /// without increasing its input size.
-    pub rounds: usize,
+    /// Increasing this value increases work-unit granularity: each work unit
+    /// contains more useful computation before the scheduler reaches the next
+    /// independently processable unit.
+    pub operations_per_work_unit: usize,
 }
 
-/// Synthetic workload intended to produce compute-intensive CPU work.
+/// Synthetic workload intended to provide controlled CPU-intensive work.
 ///
-/// The workload consists of independent work units operating on small dense
-/// matrices. Repeated multiplication increases the amount of arithmetic work
-/// performed on each work unit while keeping its input size fixed.
+/// Each useful operation multiplies one independent pair of dense 8x8 matrices.
+///
+/// Work units group several independent matrix multiplications together.
+/// Therefore:
+///
+/// total_operations = work_units * operations_per_work_unit
+///
+/// The total number of matrix multiplications in one benchmark run is:
+///
+///     work_units * operations_per_work_unit
+///
+/// In granularity experiments, these two parameters can be varied together
+/// so that the total amount of useful computation remains unchanged.
 pub struct ComputeHeavyWorkload {
-    work_units: Vec<ComputeHeavyWorkUnit>,
-    rounds: usize,
+    matrix_pairs: Vec<MatrixPair>,
+    work_units: Vec<Range<usize>>,
 }
 
-/// One independently processable unit of compute-heavy work.
+/// Input for one independent matrix-multiplication operation.
 #[derive(Debug)]
-pub struct ComputeHeavyWorkUnit {
+struct MatrixPair {
     left: Matrix,
     right: Matrix,
 }
 
 impl Workload for ComputeHeavyWorkload {
-    type WorkUnit = ComputeHeavyWorkUnit;
+    type WorkUnit = Range<usize>;
     type Config = ComputeHeavyConfig;
 
     fn generate(common: &CommonWorkloadConfig, config: &Self::Config) -> Self {
@@ -53,49 +58,71 @@ impl Workload for ComputeHeavyWorkload {
         );
 
         assert!(
-            config.rounds > 0,
-            "number of compute rounds must be greater than zero"
+            config.operations_per_work_unit > 0,
+            "operations per work unit must be greater than zero"
         );
+
+        let total_operations = common
+            .work_units
+            .checked_mul(config.operations_per_work_unit)
+            .expect("total operation count overflowed usize");
 
         let mut rng = StdRng::seed_from_u64(common.seed);
 
-        let work_units = (0..common.work_units)
-            .map(|_| ComputeHeavyWorkUnit {
+        let matrix_pairs = (0..total_operations)
+            .map(|_| MatrixPair {
                 left: random_matrix(&mut rng),
                 right: random_matrix(&mut rng),
             })
             .collect();
 
+        let work_units = (0..common.work_units)
+            .map(|work_unit_index| {
+                let start = work_unit_index * config.operations_per_work_unit;
+
+                let end = start + config.operations_per_work_unit;
+
+                start..end
+            })
+            .collect();
+
         Self {
+            matrix_pairs,
             work_units,
-            rounds: config.rounds,
         }
     }
 
     fn work_units(&self) -> &[Self::WorkUnit] {
         &self.work_units
     }
-    // Clippy prefers value-based matrix operations here, but release assembly
-    // showed that this introduces a full 512-byte copy of `unit.right` on
-    // every round. References are used deliberately to avoid that hot-path copy.
+
+    /// Executes every independent matrix multiplication belonging to one
+    /// workload unit.
+    ///
+    /// Matrix operands are passed by reference deliberately. Previous release
+    /// assembly inspection showed that value-based operations can introduce
+    /// unnecessary full-matrix copies in the hot path.
+    ///
+    /// Every matrix product contributes to a full-matrix accumulator. The
+    /// accumulator is passed through `black_box` once after all operations in the
+    /// work unit, preventing dead-code elimination without forcing a full-matrix
+    /// copy for every individual operation.
     #[allow(clippy::op_ref)]
     fn execute(&self, unit: &Self::WorkUnit) -> u64 {
-        let mut current = unit.left;
+        let mut accumulator = Matrix::zeros();
+        let mut checksum = 0u64;
 
-        for _ in 0..self.rounds {
-            // Use reference-based matrix operations deliberately. Passing the
-            // matrices by value can introduce full 512-byte matrix copies in
-            // the generated hot loop.
-            let product = &current * &unit.right;
+        for pair in &self.matrix_pairs[unit.clone()] {
+            let product = &pair.left * &pair.right;
 
-            current = product * MATRIX_SCALE + &unit.left;
+            checksum = checksum.wrapping_add(product[(0, 0)].to_bits());
+
+            accumulator += &product;
         }
 
-        // Make the complete result observable before extracting the cheap
-        // control value used by the scheduler-level checksum.
-        let current = black_box(current);
+        black_box(&accumulator);
 
-        current[(0, 0)].to_bits()
+        checksum
     }
 }
 
