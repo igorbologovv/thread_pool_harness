@@ -1,10 +1,6 @@
-[package]
-name = "adaptive-threadpool-thesis"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-clap = { version = "4.6.7", features = ["derive"] }
-nalgebra = "0.35.0"
-rand = "0.10.2"
-rayon = "1.12.0"
+[workspace]
+resolver = "3"
+members = [
+    "threadance",
+    "harness",
+]

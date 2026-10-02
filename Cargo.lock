@@ -3,16 +3,6 @@
 version = 4
 
 [[package]]
-name = "adaptive-threadpool-thesis"
-version = "0.1.0"
-dependencies = [
- "clap",
- "nalgebra",
- "rand",
- "rayon",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,6 +439,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "threadance"
+version = "0.1.0"
+
+[[package]]
+name = "threadance-harness"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "nalgebra",
+ "rand",
+ "rayon",
 ]
 
 [[package]]
