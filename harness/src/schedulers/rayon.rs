@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, time::Instant};
+use std::{num::NonZeroUsize, sync::Arc, time::Instant};
 
 use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder, prelude::*};
 
@@ -19,7 +19,7 @@ impl RayonScheduler {
 }
 
 impl Scheduler for RayonScheduler {
-    fn run<W: Workload>(&self, workload: &W) -> RunResult {
+    fn run<W: Workload>(&self, workload: &Arc<W>) -> RunResult {
         let work_units = workload.work_units();
 
         let start = Instant::now();

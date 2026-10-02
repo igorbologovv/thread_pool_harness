@@ -6,14 +6,14 @@ mod schedulers;
 mod summary;
 mod workload;
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use clap::Parser;
 
 use cli::{Cli, SchedulerKind, WorkloadKind};
 use perf_control::PerfControl;
 use runner::run_repeated;
-use schedulers::{Scheduler, rayon::RayonScheduler};
+use schedulers::{Scheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler};
 use summary::RunSummary;
 use workload::{
     CommonWorkloadConfig, Workload,
@@ -43,12 +43,22 @@ fn main() {
                 operations_per_work_unit: cli.operations_per_work_unit.get(),
             };
 
-            let workload = ComputeHeavyWorkload::generate(&common_config, &workload_config);
+            let workload = Arc::new(ComputeHeavyWorkload::generate(
+                &common_config,
+                &workload_config,
+            ));
 
             match cli.scheduler {
                 SchedulerKind::Rayon => {
                     let scheduler = RayonScheduler::new(cli.workers)
                         .expect("failed to create Rayon thread pool");
+
+                    run_benchmark(&scheduler, &workload, cli.warmup, cli.runs, perf.as_mut());
+                }
+
+                SchedulerKind::Threadance => {
+                    let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
+                        .expect("failed to create Threadance thread pool");
 
                     run_benchmark(&scheduler, &workload, cli.warmup, cli.runs, perf.as_mut());
                 }
@@ -59,7 +69,7 @@ fn main() {
 
 fn run_benchmark<S, W>(
     scheduler: &S,
-    workload: &W,
+    workload: &Arc<W>,
     warmup: usize,
     runs: NonZeroUsize,
     perf: Option<&mut PerfControl>,

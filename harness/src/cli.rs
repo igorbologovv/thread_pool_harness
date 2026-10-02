@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long)]
     pub workers: NonZeroUsize,
 
+    /// Capacity of the Threadance task queue.
+    #[arg(long, default_value = "1024")]
+    pub queue_capacity: NonZeroUsize,
+
     /// Number of independently schedulable work units.
     #[arg(long)]
     pub work_units: NonZeroUsize,
@@ -54,6 +58,7 @@ pub enum WorkloadKind {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SchedulerKind {
     Rayon,
+    Threadance,
 }
 
 impl fmt::Display for WorkloadKind {
