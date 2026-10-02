@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, time::Instant};
 
 use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder, prelude::*};
 
-use crate::{result::RunResult, workload::Workload};
+use crate::{result::RunResult, schedulers::Scheduler, workload::Workload};
 
 pub struct RayonScheduler {
     pool: ThreadPool,
@@ -16,8 +16,10 @@ impl RayonScheduler {
 
         Ok(Self { pool })
     }
+}
 
-    pub fn run<W: Workload>(&self, workload: &W) -> RunResult {
+impl Scheduler for RayonScheduler {
+    fn run<W: Workload>(&self, workload: &W) -> RunResult {
         let work_units = workload.work_units();
 
         let start = Instant::now();

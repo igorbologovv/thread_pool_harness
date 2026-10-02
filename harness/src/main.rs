@@ -6,12 +6,14 @@ mod schedulers;
 mod summary;
 mod workload;
 
+use std::num::NonZeroUsize;
+
 use clap::Parser;
 
-use cli::{Cli, WorkloadKind};
+use cli::{Cli, SchedulerKind, WorkloadKind};
 use perf_control::PerfControl;
 use runner::run_repeated;
-use schedulers::rayon::RayonScheduler;
+use schedulers::{Scheduler, rayon::RayonScheduler};
 use summary::RunSummary;
 use workload::{
     CommonWorkloadConfig, Workload,
@@ -43,16 +45,31 @@ fn main() {
 
             let workload = ComputeHeavyWorkload::generate(&common_config, &workload_config);
 
-            let scheduler =
-                RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
+            match cli.scheduler {
+                SchedulerKind::Rayon => {
+                    let scheduler = RayonScheduler::new(cli.workers)
+                        .expect("failed to create Rayon thread pool");
 
-            let results = run_repeated(cli.warmup, cli.runs, perf.as_mut(), || {
-                scheduler.run(&workload)
-            });
-
-            let summary = RunSummary::from_results(&results);
-
-            println!("{summary}");
+                    run_benchmark(&scheduler, &workload, cli.warmup, cli.runs, perf.as_mut());
+                }
+            }
         }
     }
+}
+
+fn run_benchmark<S, W>(
+    scheduler: &S,
+    workload: &W,
+    warmup: usize,
+    runs: NonZeroUsize,
+    perf: Option<&mut PerfControl>,
+) where
+    S: Scheduler,
+    W: Workload,
+{
+    let results = run_repeated(warmup, runs, perf, || scheduler.run(workload));
+
+    let summary = RunSummary::from_results(&results);
+
+    println!("{summary}");
 }

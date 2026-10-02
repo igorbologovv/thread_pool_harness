@@ -9,6 +9,10 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub workload: WorkloadKind,
 
+    /// Scheduler implementation to benchmark.
+    #[arg(long, value_enum, default_value = "rayon")]
+    pub scheduler: SchedulerKind,
+
     /// Number of worker threads.
     #[arg(long)]
     pub workers: NonZeroUsize,
@@ -32,6 +36,7 @@ pub struct Cli {
     /// Number of measured benchmark runs.
     #[arg(long, default_value = "50")]
     pub runs: NonZeroUsize,
+
     /// FIFO used to send measurement-control commands to perf.
     #[arg(long)]
     pub perf_control: Option<PathBuf>,
@@ -44,6 +49,11 @@ pub struct Cli {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum WorkloadKind {
     ComputeHeavy,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SchedulerKind {
+    Rayon,
 }
 
 impl fmt::Display for WorkloadKind {
