@@ -117,3 +117,61 @@ The following details are not yet fixed:
 - exact definitions of the uniform and burst workload-delivery modes;
 - how to provide equivalent paced task submission across schedulers with different APIs;
 - which internal Threadance configurations should be evaluated after the baseline study.
+
+## 2026-10-03: Bevy baseline implementation
+
+### Decision
+
+Bevy `TaskPool` is added as the second external thread-pool baseline.
+
+The harness uses `TaskPoolBuilder` with an explicitly configured worker-thread
+count so that the requested worker count is controlled in the same way as for
+the Rayon baseline.
+
+For the initial all-work-available-at-once experiment, Bevy tasks are submitted
+using scoped execution.
+
+`scope_with_executor(false, None, ...)` is used instead of the simpler
+`scope(...)` API. This prevents the multithreaded task-pool executor from being
+ticked by the calling benchmark thread while the scope is waiting.
+
+### Rationale
+
+The objective of the initial experiment is to compare pools using a controlled
+number of worker threads. Allowing the benchmark thread to participate in task
+execution could make the effective execution resources different between
+scheduler implementations.
+
+The initial Bevy comparison therefore attempts to keep CPU work on the
+configured Bevy worker threads.
+
+This decision should be revisited when workload-delivery modes are introduced,
+because paced task submission may require a different scheduler adapter API.
+
+## 2026-10-03: Initial Rayon and Bevy validation
+
+The Rayon and Bevy scheduler adapters were validated using the existing
+`ComputeHeavyWorkload`.
+
+Configuration:
+
+- 8 worker threads;
+- 1000 work units;
+- 10 matrix operations per work unit;
+- 5 measured runs.
+
+Both scheduler implementations produced the same checksum:
+
+`17882811132803870948`
+
+This confirms that the two scheduler adapters executed the same logical
+workload correctly.
+
+Observed pilot medians were approximately:
+
+- Rayon: 1.048 ms;
+- Bevy TaskPool: 1.231 ms.
+
+These measurements are treated only as implementation validation and not as
+research results. The run count, workload, worker count, and workload size are
+not yet part of the final experimental methodology.

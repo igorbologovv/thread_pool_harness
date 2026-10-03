@@ -6,6 +6,7 @@
 //! Workload generation happens outside the measured execution interval.
 //! Scheduling and thread management are deliberately kept outside this module.
 
+pub mod bls_aggregate_verify;
 pub mod compute_heavy;
 
 /// Configuration shared by all workload implementations.

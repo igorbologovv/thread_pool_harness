@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bevy_tasks = { version = "0.19.1", features = ["multi_threaded"] }
 clap = { version = "4.6.7", features = ["derive"] }
 nalgebra = "0.35.0"
 rand = "0.10.2"
 rayon = "1.12.0"
+solana-bls-signatures = "4.0.0"
 threadance = { version = "0.1.0", path = "../threadance" }

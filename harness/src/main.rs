@@ -13,10 +13,13 @@ use clap::Parser;
 use cli::{Cli, SchedulerKind, WorkloadKind};
 use perf_control::PerfControl;
 use runner::run_repeated;
-use schedulers::{Scheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler};
+use schedulers::{
+    Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
+};
 use summary::RunSummary;
 use workload::{
     CommonWorkloadConfig, Workload,
+    bls_aggregate_verify::{BlsAggregateVerifyConfig, BlsAggregateVerifyWorkload},
     compute_heavy::{ComputeHeavyConfig, ComputeHeavyWorkload},
 };
 
@@ -39,8 +42,12 @@ fn main() {
 
     match cli.workload {
         WorkloadKind::ComputeHeavy => {
+            let operations_per_work_unit = cli
+                .operations_per_work_unit
+                .expect("--operations-per-work-unit is required for compute-heavy");
+
             let workload_config = ComputeHeavyConfig {
-                operations_per_work_unit: cli.operations_per_work_unit.get(),
+                operations_per_work_unit: operations_per_work_unit.get(),
             };
 
             let workload = Arc::new(ComputeHeavyWorkload::generate(
@@ -48,21 +55,48 @@ fn main() {
                 &workload_config,
             ));
 
-            match cli.scheduler {
-                SchedulerKind::Rayon => {
-                    let scheduler = RayonScheduler::new(cli.workers)
-                        .expect("failed to create Rayon thread pool");
+            run_selected_scheduler(&cli, &workload, perf.as_mut());
+        }
 
-                    run_benchmark(&scheduler, &workload, cli.warmup, cli.runs, perf.as_mut());
-                }
+        WorkloadKind::BlsAggregateVerify => {
+            let workload_config = BlsAggregateVerifyConfig {
+                validators: cli.validators.get(),
+                signers_per_certificate: cli.signers_per_certificate.get(),
+            };
 
-                SchedulerKind::Threadance => {
-                    let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
-                        .expect("failed to create Threadance thread pool");
+            let workload = Arc::new(BlsAggregateVerifyWorkload::generate(
+                &common_config,
+                &workload_config,
+            ));
 
-                    run_benchmark(&scheduler, &workload, cli.warmup, cli.runs, perf.as_mut());
-                }
-            }
+            run_selected_scheduler(&cli, &workload, perf.as_mut());
+        }
+    }
+}
+
+fn run_selected_scheduler<W>(cli: &Cli, workload: &Arc<W>, perf: Option<&mut PerfControl>)
+where
+    W: Workload,
+{
+    match cli.scheduler {
+        SchedulerKind::Rayon => {
+            let scheduler =
+                RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
+
+            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
+        }
+
+        SchedulerKind::Bevy => {
+            let scheduler = BevyScheduler::new(cli.workers);
+
+            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
+        }
+
+        SchedulerKind::Threadance => {
+            let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
+                .expect("failed to create Threadance thread pool");
+
+            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
         }
     }
 }

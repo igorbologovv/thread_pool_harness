@@ -22,12 +22,24 @@ pub struct Cli {
     pub queue_capacity: NonZeroUsize,
 
     /// Number of independently schedulable work units.
+    ///
+    /// For the BLS workload, one work unit is one aggregate certificate-like
+    /// verification input.
     #[arg(long)]
     pub work_units: NonZeroUsize,
 
-    /// Number of independent matrix operations performed by each work unit.
+    /// Number of independent matrix operations performed by each compute-heavy
+    /// work unit.
     #[arg(long)]
-    pub operations_per_work_unit: NonZeroUsize,
+    pub operations_per_work_unit: Option<NonZeroUsize>,
+
+    /// Total BLS validator-set size.
+    #[arg(long, default_value = "2000")]
+    pub validators: NonZeroUsize,
+
+    /// Number of BLS signers included in each aggregate signature.
+    #[arg(long, default_value = "1600")]
+    pub signers_per_certificate: NonZeroUsize,
 
     /// Seed used for deterministic workload generation.
     #[arg(long, default_value_t = 1)]
@@ -53,11 +65,13 @@ pub struct Cli {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum WorkloadKind {
     ComputeHeavy,
+    BlsAggregateVerify,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SchedulerKind {
     Rayon,
+    Bevy,
     Threadance,
 }
 
