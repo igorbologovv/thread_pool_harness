@@ -4,6 +4,7 @@
 //! worker threads. Scheduler implementations must remain independent from
 //! workload-specific processing logic.
 
+pub mod bevy;
 pub mod rayon;
 pub mod threadance;
 
