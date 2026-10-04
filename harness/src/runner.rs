@@ -19,7 +19,7 @@ where
         run_once();
     }
 
-    if let Some(control) = perf.as_deref_mut() {
+    if let Some(control) = perf.as_mut() {
         control.enable().expect("failed to enable perf counters");
     }
 
@@ -41,7 +41,7 @@ where
         results.push(result);
     }
 
-    if let Some(control) = perf.as_deref_mut() {
+    if let Some(control) = perf.as_mut() {
         control.disable().expect("failed to disable perf counters");
     }
 

@@ -62,6 +62,7 @@ fn main() {
             let workload_config = BlsAggregateVerifyConfig {
                 validators: cli.validators.get(),
                 signers_per_certificate: cli.signers_per_certificate.get(),
+                certificates_per_work_unit: cli.certificates_per_work_unit.get(),
             };
 
             let workload = Arc::new(BlsAggregateVerifyWorkload::generate(

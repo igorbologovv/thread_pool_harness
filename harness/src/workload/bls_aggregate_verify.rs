@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use rand::{RngExt, SeedableRng, rngs::StdRng, seq::SliceRandom};
 use solana_bls_signatures::{
     keypair::Keypair,
@@ -9,20 +11,15 @@ use super::{CommonWorkloadConfig, Workload};
 
 /// Pure BLS aggregate-signature verification workload.
 ///
-/// This workload intentionally excludes Agave-specific Bank, stake, certificate,
-/// and bitmap-decoding logic.
-///
 /// Dataset generation happens outside the measured interval.
 ///
-/// Each measured work unit:
-///
-/// 1. selects the public keys belonging to the certificate signers;
-/// 2. aggregates those public keys;
-/// 3. verifies one aggregate BLS signature against the payload.
+/// One work unit contains one or more independent certificate verifications.
+/// This allows task granularity to be varied without changing the scheduler
+/// implementations.
 pub struct BlsAggregateVerifyWorkload {
     validator_pubkeys: Vec<PopVerified<PubkeyAffine>>,
     inputs: Vec<BlsVerifyInput>,
-    work_units: Vec<usize>,
+    work_units: Vec<Range<usize>>,
 }
 
 #[derive(Debug)]
@@ -32,6 +29,9 @@ pub struct BlsAggregateVerifyConfig {
 
     /// Number of validators represented in each aggregate signature.
     pub signers_per_certificate: usize,
+
+    /// Number of certificate verifications grouped into one work unit.
+    pub certificates_per_work_unit: usize,
 }
 
 struct BlsVerifyInput {
@@ -41,7 +41,7 @@ struct BlsVerifyInput {
 }
 
 impl Workload for BlsAggregateVerifyWorkload {
-    type WorkUnit = usize;
+    type WorkUnit = Range<usize>;
     type Config = BlsAggregateVerifyConfig;
 
     fn generate(common: &CommonWorkloadConfig, config: &Self::Config) -> Self {
@@ -49,28 +49,30 @@ impl Workload for BlsAggregateVerifyWorkload {
             common.work_units > 0,
             "number of work units must be greater than zero"
         );
-
         assert!(
             config.validators > 0,
             "validator count must be greater than zero"
         );
-
         assert!(
             config.signers_per_certificate > 0,
             "signer count must be greater than zero"
         );
-
         assert!(
             config.signers_per_certificate <= config.validators,
             "signer count cannot exceed validator count"
         );
+        assert!(
+            config.certificates_per_work_unit > 0,
+            "certificates per work unit must be greater than zero"
+        );
+
+        let total_certificates = common
+            .work_units
+            .checked_mul(config.certificates_per_work_unit)
+            .expect("total certificate count overflowed usize");
 
         let mut rng = StdRng::seed_from_u64(common.seed);
 
-        // Generate one deterministic validator set.
-        //
-        // Secret keys are needed only while constructing valid aggregate
-        // signatures. They are discarded before benchmark execution.
         let keypairs: Vec<Keypair> = (0..config.validators)
             .map(|_| {
                 let ikm = rng.random::<[u8; 32]>();
@@ -81,25 +83,16 @@ impl Workload for BlsAggregateVerifyWorkload {
 
         let validator_pubkeys = keypairs.iter().map(|keypair| keypair.public).collect();
 
-        let inputs = (0..common.work_units)
+        let inputs = (0..total_certificates)
             .map(|_| {
                 let payload = rng.random::<[u8; 32]>();
 
-                // Randomize the signer subset for every certificate.
                 let mut signer_indices: Vec<usize> = (0..config.validators).collect();
 
                 signer_indices.shuffle(&mut rng);
                 signer_indices.truncate(config.signers_per_certificate);
-
-                // A real signer bitmap is traversed in rank order.
-                // Sorting gives the same stable ordering without introducing
-                // bitmap decoding into this isolated crypto workload.
                 signer_indices.sort_unstable();
 
-                // Certificate creation happens outside the benchmark.
-                //
-                // Every selected validator signs the same payload and the
-                // individual signatures are aggregated into one signature.
                 let signatures: Vec<SignatureProjective> = signer_indices
                     .iter()
                     .map(|&index| keypairs[index].sign(&payload))
@@ -116,10 +109,16 @@ impl Workload for BlsAggregateVerifyWorkload {
             })
             .collect();
 
-        // Secret keys and individual signatures are dropped here.
         drop(keypairs);
 
-        let work_units = (0..common.work_units).collect();
+        let work_units = (0..common.work_units)
+            .map(|work_unit_index| {
+                let start = work_unit_index * config.certificates_per_work_unit;
+                let end = start + config.certificates_per_work_unit;
+
+                start..end
+            })
+            .collect();
 
         Self {
             validator_pubkeys,
@@ -133,32 +132,37 @@ impl Workload for BlsAggregateVerifyWorkload {
     }
 
     fn execute(&self, unit: &Self::WorkUnit) -> u64 {
-        let input = &self.inputs[*unit];
+        let mut checksum = 0u64;
 
-        // This is intentionally sequential.
-        //
-        // The outer Scheduler under test is responsible for all parallelism.
-        let aggregate_pubkey = PubkeyProjective::aggregate(
-            input
-                .signer_indices
-                .iter()
-                .map(|&index| &self.validator_pubkeys[index]),
-        )
-        .expect("failed to aggregate BLS public keys");
+        for input_index in unit.clone() {
+            let input = &self.inputs[input_index];
 
-        let valid = aggregate_pubkey
-            .verify_signature(&input.signature, &input.payload)
-            .is_ok();
+            // Internal BLS aggregation remains sequential. The scheduler under
+            // test is responsible for parallelism between work units.
+            let aggregate_pubkey = PubkeyProjective::aggregate(
+                input
+                    .signer_indices
+                    .iter()
+                    .map(|&index| &self.validator_pubkeys[index]),
+            )
+            .expect("failed to aggregate BLS public keys");
 
-        assert!(valid, "generated BLS aggregate signature must be valid");
+            let valid = aggregate_pubkey
+                .verify_signature(&input.signature, &input.payload)
+                .is_ok();
 
-        // Deterministic control value. Using payload bytes rather than simply
-        // returning 1 makes missing/duplicated work easier to detect.
-        u64::from_le_bytes(
-            input.payload[..8]
-                .try_into()
-                .expect("payload must contain at least 8 bytes"),
-        )
+            assert!(valid, "generated BLS aggregate signature must be valid");
+
+            let value = u64::from_le_bytes(
+                input.payload[..8]
+                    .try_into()
+                    .expect("payload must contain at least 8 bytes"),
+            );
+
+            checksum = checksum.wrapping_add(value);
+        }
+
+        checksum
     }
 }
 
@@ -176,11 +180,13 @@ mod tests {
         let config = BlsAggregateVerifyConfig {
             validators: 8,
             signers_per_certificate: 6,
+            certificates_per_work_unit: 2,
         };
 
         let workload = BlsAggregateVerifyWorkload::generate(&common, &config);
 
         assert_eq!(workload.work_units().len(), 4);
+        assert_eq!(workload.work_units(), &[0..2, 2..4, 4..6, 6..8]);
 
         for unit in workload.work_units() {
             workload.execute(unit);

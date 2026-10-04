@@ -33,7 +33,8 @@ impl Scheduler for ThreadanceScheduler {
 
         let start = Instant::now();
 
-        for unit in work_units.iter().cloned() {
+        for unit in work_units {
+            let unit = unit.clone();
             let workload = workload.clone();
             let result_sender = result_sender.clone();
 

@@ -41,6 +41,10 @@ pub struct Cli {
     #[arg(long, default_value = "1600")]
     pub signers_per_certificate: NonZeroUsize,
 
+    /// Number of BLS certificate verifications grouped into one work unit.
+    #[arg(long, default_value = "1")]
+    pub certificates_per_work_unit: NonZeroUsize,
+
     /// Seed used for deterministic workload generation.
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
