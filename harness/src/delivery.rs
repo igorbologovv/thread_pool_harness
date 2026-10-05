@@ -206,7 +206,7 @@ impl Completion {
     pub(crate) fn complete_one(&self) {
         let previous = self.remaining.fetch_sub(1, Ordering::AcqRel);
 
-        debug_assert!(previous > 0);
+        assert!(previous > 0, "work unit completed more than once");
 
         if previous == 1 {
             self.waiter.unpark();
@@ -388,5 +388,45 @@ mod tests {
             / gaps.len() as f64;
 
         variance.sqrt() / mean
+    }
+
+    #[test]
+    #[ignore = "manual timing diagnostic; depends on host scheduler timing"]
+    fn diagnose_pacer_lateness() {
+        const WORK_UNITS: usize = 64;
+        const WINDOW: Duration = Duration::from_millis(100);
+        const SEED: u64 = 777;
+
+        for mode in [
+            DeliveryMode::SteadyArrivals,
+            DeliveryMode::VariableArrivals,
+            DeliveryMode::BurstyArrivals,
+        ] {
+            let schedule = DeliverySchedule::generate(mode, WORK_UNITS, WINDOW, SEED);
+
+            let start = Instant::now();
+            let mut lateness = Vec::with_capacity(WORK_UNITS);
+
+            for &offset in schedule.offsets() {
+                sleep_until(start + offset);
+
+                let actual = start.elapsed();
+                lateness.push(actual.saturating_sub(offset));
+            }
+
+            let mut lateness_ns: Vec<u128> = lateness.iter().map(Duration::as_nanos).collect();
+
+            lateness_ns.sort_unstable();
+
+            let sum: u128 = lateness_ns.iter().sum();
+            let mean_ns = sum / lateness_ns.len() as u128;
+            let p95_index = ((lateness_ns.len() - 1) * 95) / 100;
+
+            let mean = Duration::from_nanos(mean_ns as u64);
+            let p95 = Duration::from_nanos(lateness_ns[p95_index] as u64);
+            let max = Duration::from_nanos(*lateness_ns.last().unwrap() as u64);
+
+            println!("{mode}: mean lateness={mean:?}, p95={p95:?}, max={max:?}");
+        }
     }
 }

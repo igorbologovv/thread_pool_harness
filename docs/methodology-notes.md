@@ -22,10 +22,15 @@ This allows the same workload to be executed using different scheduler implement
 
 The current scheduler implementations are:
 
-- Rayon
-- Threadance with a bounded Crossbeam channel
+- Rayon;
+- Bevy `TaskPool`;
+- Threadance with a bounded Crossbeam channel.
 
-Threadance is currently kept as an early prototype and will not be the main focus until the external baselines and workloads are established.
+All three schedulers are exposed through the same harness-level scheduler
+interface and receive the same workload and workload-delivery schedule.
+
+Threadance remains the custom implementation under investigation, while Rayon
+and Bevy provide external baselines.
 
 ## External baselines
 
@@ -37,13 +42,14 @@ It is also relevant to the motivating use case because Rayon has been used in Ag
 
 ### Bevy TaskPool
 
-Bevy TaskPool will be added as another external thread-pool baseline.
+Bevy `TaskPool` is used as the second external thread-pool baseline.
 
-The primary comparison will use `bevy_tasks::TaskPool`, rather than Bevy ECS scheduling.
+The comparison uses `bevy_tasks::TaskPool`, rather than Bevy ECS scheduling.
 
-Bevy ECS introduces additional functionality such as system scheduling, dependency handling, and resource-access coordination. These costs would make it difficult to attribute observed performance differences specifically to the underlying thread-pool behavior.
-
-Bevy ECS may later be evaluated separately as an application-level scheduling case.
+Bevy ECS introduces additional functionality such as system scheduling,
+dependency handling, and resource-access coordination. These costs would make
+it difficult to attribute observed performance differences specifically to the
+underlying thread-pool behavior.
 
 ## Workloads
 
@@ -76,22 +82,22 @@ This order is intended to avoid designing the custom thread pool around assumpti
 
 ## Workload delivery
 
-The initial comparison will use an all-work-available-at-once mode because it provides a simple and controlled baseline.
+The harness currently supports four workload-delivery conditions:
 
-Later experiments will introduce time-dependent workload delivery.
+- `all-at-once`;
+- `steady-arrivals`;
+- `variable-arrivals`;
+- `bursty-arrivals`.
 
-The planned delivery modes are:
+`all-at-once` submits work units immediately without intentional pacing.
 
-- uniform;
-- moderate burst;
-- aggressive burst.
+The three scheduled modes use deterministic pseudo-random inter-arrival gaps.
+For a fixed number of work units and arrival window, they contain the same total
+work and the same mean offered arrival rate while differing in temporal
+variability.
 
-Burst behavior will be controlled primarily through:
-
-- batch size (B);
-- batch-arrival interval (T).
-
-The exact ranges will be selected during pilot experiments.
+The scheduled delivery modes are generated before measurement and reused across
+scheduler implementations and benchmark repetitions.
 
 ## Measurements
 
@@ -110,12 +116,12 @@ Additional thread-pool-level instrumentation may be introduced when needed to ex
 The following details are not yet fixed:
 
 - whether another external thread-pool implementation should be included;
-- exact workload implementations and dataset sizes;
+- which additional realistic workloads should be included;
+- final workload dataset sizes;
 - worker-count values used in the final experiment;
 - number of warm-up and measured runs;
 - exact statistical reporting procedure;
-- exact definitions of the uniform and burst workload-delivery modes;
-- how to provide equivalent paced task submission across schedulers with different APIs;
+- which arrival-window values should be used to represent different offered-load levels;
 - which internal Threadance configurations should be evaluated after the baseline study.
 
 ## 2026-10-03: Bevy baseline implementation
@@ -190,10 +196,9 @@ The measured scheduler contract is now:
 3. wait until all submitted work has completed;
 4. stop the elapsed-time measurement.
 
-Rayon uses completion of the parallel iterator, Bevy uses completion of the
-scoped task execution, and Threadance uses a lightweight completion counter.
-Each completed Threadance job performs one atomic decrement, and only the last
-job wakes the waiting benchmark thread.
+All three scheduler adapters now use the same harness-level completion
+mechanism. Each completed work unit performs one atomic decrement, and only the
+last completed work unit wakes the waiting benchmark thread.
 
 ### Rationale
 
@@ -248,4 +253,124 @@ Absolute delivery deadlines are calculated relative to the benchmark start
 time. The pacer sleeps until `start + emit_offset`, rather than sleeping for a
 sequence of relative gaps, so timing error does not accumulate across the
 schedule.
+## 2026-10-05: Scheduler parity validation
 
+### Decision
+
+The scheduler adapters are validated with a dedicated instrumented workload
+that records the number of executions of every work unit.
+
+The validation is run separately for:
+
+- Rayon;
+- Bevy TaskPool;
+- Threadance.
+
+Each work unit must be executed exactly once.
+
+The completion counter also uses a release-mode assertion to detect accidental
+over-completion.
+
+### Rationale
+
+The benchmark result path no longer transports per-work-unit checksum values,
+so correctness is validated separately from the measured workload path.
+
+Using a dedicated validation workload avoids adding per-task result aggregation
+or additional synchronization overhead to performance runs.
+
+This validation checks that scheduler adapters do not lose, duplicate, or
+incorrectly complete submitted work.
+
+## 2026-10-05: Pacer timing validation
+
+### Decision
+
+The delivery pacer was validated with a manual diagnostic that compares planned
+delivery deadlines with actual wake-up times.
+
+The diagnostic uses the same absolute-deadline waiting logic as the benchmark
+pacer but is excluded from normal benchmark runs.
+
+For a schedule containing 64 work units over a 100 ms arrival window, measured
+lateness was approximately:
+
+- steady arrivals: mean 52.9 µs, maximum 59.9 µs;
+- variable arrivals: mean 53.6 µs, maximum 70.6 µs;
+- bursty arrivals: mean 49.5 µs, maximum 59.4 µs.
+
+### Rationale
+
+The delivery modes are meaningful only if the benchmark thread can reproduce
+the generated arrival schedule with sufficiently small timing error.
+
+Absolute deadlines prevent timing error from accumulating across the sequence
+of arrivals.
+
+No spin-waiting is used because additional busy waiting by the pacer would
+contaminate CPU-time and cycle measurements intended to describe scheduler and
+worker behavior.
+
+## 2026-10-05: Perf measurement boundaries
+
+### Decision
+
+Linux `perf` counters are enabled separately for every measured benchmark
+repetition and disabled immediately after that repetition completes.
+
+Warm-up runs are executed with perf counters disabled.
+
+The measured perf interval therefore includes:
+
+- workload pacing;
+- task submission;
+- worker execution;
+- completion synchronization.
+
+It excludes:
+
+- workload generation;
+- scheduler construction;
+- delivery-schedule generation;
+- warm-up runs;
+- result-vector bookkeeping between measured repetitions.
+
+Repeated enable/disable intervals were validated experimentally. Perf counters
+continue accumulating across enabled intervals without counting the disabled
+inter-run periods.
+
+A validation run using five measured repetitions produced approximately five
+times the instructions, cycles, and task-clock of an equivalent single
+repetition, confirming the intended accumulation behavior.
+
+### Kernel scheduler events
+
+Kernel scheduler events such as context switches and CPU migrations require
+sufficient perf permissions.
+
+On the benchmark host, `kernel.perf_event_paranoid=2` restricted the relevant
+measurements to user-space events and produced unusable zero values for context
+switches.
+
+The setting was therefore changed to:
+
+`kernel.perf_event_paranoid=1`
+
+This allows context-switch and CPU-migration events to be collected for the
+benchmark process.
+
+The final experimental environment should record this setting together with
+the other host configuration.
+
+## 2026-10-05: Threadance queue capacity in parity experiments
+
+Threadance currently uses a bounded task queue.
+
+For scheduler-parity experiments, the queue capacity should be configured large
+enough that queue saturation does not block the benchmark submission thread.
+
+This prevents Threadance queue backpressure from changing the externally
+generated workload-delivery schedule.
+
+Queue capacity may later be varied deliberately as a separate Threadance
+configuration parameter.
