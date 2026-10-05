@@ -40,6 +40,6 @@ pub trait Workload: Send + Sync + 'static {
     /// Returns all independently processable work units.
     fn work_units(&self) -> &[Self::WorkUnit];
 
-    /// Executes one work unit and returns a deterministic control value.
-    fn execute(&self, unit: &Self::WorkUnit) -> u64;
+    /// Executes one work unit.
+    fn execute(&self, unit: &Self::WorkUnit);
 }

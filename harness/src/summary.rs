@@ -11,7 +11,6 @@ pub struct RunSummary {
     min_elapsed_ns: u64,
     max_elapsed_ns: u64,
     median_throughput: f64,
-    checksum: u64,
 }
 
 impl RunSummary {
@@ -69,7 +68,6 @@ impl RunSummary {
             min_elapsed_ns,
             max_elapsed_ns,
             median_throughput,
-            checksum: results[0].checksum,
         }
     }
 }
@@ -107,12 +105,11 @@ impl fmt::Display for RunSummary {
             "Max elapsed       : {:.3} ms",
             self.max_elapsed_ns as f64 / 1_000_000.0
         )?;
-        writeln!(
+        write!(
             f,
             "Median throughput : {:.2} work units/s",
             self.median_throughput
-        )?;
-        write!(f, "Checksum          : {}", self.checksum)
+        )
     }
 }
 

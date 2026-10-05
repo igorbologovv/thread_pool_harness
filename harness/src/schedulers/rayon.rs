@@ -21,24 +21,22 @@ impl RayonScheduler {
 impl Scheduler for RayonScheduler {
     fn run<W: Workload>(&self, workload: &Arc<W>) -> RunResult {
         let work_units = workload.work_units();
+        let completed_work_units = work_units.len() as u64;
 
         let start = Instant::now();
 
-        let checksum = self.pool.install(|| {
+        self.pool.install(|| {
             work_units
                 .par_iter()
-                .map(|unit| workload.execute(unit))
-                .reduce(|| 0u64, |acc, value| acc.wrapping_add(value))
+                .for_each(|unit| workload.execute(unit));
         });
 
         let elapsed = start.elapsed();
-        let completed_work_units = work_units.len() as u64;
 
         RunResult {
             completed_work_units,
             elapsed_ns: elapsed.as_nanos() as u64,
             work_units_per_second: completed_work_units as f64 / elapsed.as_secs_f64(),
-            checksum,
         }
     }
 }

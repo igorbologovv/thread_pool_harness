@@ -108,21 +108,16 @@ impl Workload for ComputeHeavyWorkload {
     /// work unit, preventing dead-code elimination without forcing a full-matrix
     /// copy for every individual operation.
     #[allow(clippy::op_ref)]
-    fn execute(&self, unit: &Self::WorkUnit) -> u64 {
+    fn execute(&self, unit: &Self::WorkUnit) {
         let mut accumulator = Matrix::zeros();
-        let mut checksum = 0u64;
 
         for pair in &self.matrix_pairs[unit.clone()] {
             let product = &pair.left * &pair.right;
-
-            checksum = checksum.wrapping_add(product[(0, 0)].to_bits());
 
             accumulator += &product;
         }
 
         black_box(&accumulator);
-
-        checksum
     }
 }
 

@@ -175,3 +175,42 @@ Observed pilot medians were approximately:
 These measurements are treated only as implementation validation and not as
 research results. The run count, workload, worker count, and workload size are
 not yet part of the final experimental methodology.
+
+## 2026-10-05: Result aggregation removed from measured runs
+
+### Decision
+
+Benchmark work units no longer return deterministic checksum values to the
+scheduler adapters.
+
+The measured scheduler contract is now:
+
+1. submit or expose the configured work units;
+2. execute every work unit;
+3. wait until all submitted work has completed;
+4. stop the elapsed-time measurement.
+
+Rayon uses completion of the parallel iterator, Bevy uses completion of the
+scoped task execution, and Threadance uses a lightweight completion counter.
+Each completed Threadance job performs one atomic decrement, and only the last
+job wakes the waiting benchmark thread.
+
+### Rationale
+
+Checksum aggregation was a benchmark-harness correctness mechanism rather than
+part of the CPU workloads under study. It also produced different result paths
+for the scheduler implementations: Rayon used parallel reduction, Bevy
+returned scoped task results, and Threadance sent one result through a channel
+for every work unit.
+
+Removing result aggregation avoids measuring these adapter-specific result
+transport mechanisms.
+
+Workload correctness is instead checked by workload and thread-pool tests.
+The BLS workload also continues to assert successful signature verification
+during execution.
+
+Completion synchronization remains inside the measured interval because
+determining that all submitted work has finished is necessary scheduler
+behavior.
+

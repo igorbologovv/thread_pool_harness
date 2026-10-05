@@ -131,9 +131,7 @@ impl Workload for BlsAggregateVerifyWorkload {
         &self.work_units
     }
 
-    fn execute(&self, unit: &Self::WorkUnit) -> u64 {
-        let mut checksum = 0u64;
-
+    fn execute(&self, unit: &Self::WorkUnit) {
         for input_index in unit.clone() {
             let input = &self.inputs[input_index];
 
@@ -152,17 +150,7 @@ impl Workload for BlsAggregateVerifyWorkload {
                 .is_ok();
 
             assert!(valid, "generated BLS aggregate signature must be valid");
-
-            let value = u64::from_le_bytes(
-                input.payload[..8]
-                    .try_into()
-                    .expect("payload must contain at least 8 bytes"),
-            );
-
-            checksum = checksum.wrapping_add(value);
         }
-
-        checksum
     }
 }
 

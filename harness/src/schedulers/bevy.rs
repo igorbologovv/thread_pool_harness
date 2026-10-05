@@ -28,15 +28,13 @@ impl Scheduler for BevyScheduler {
 
         let start = Instant::now();
 
-        let results = self.pool.scope_with_executor(false, None, |scope| {
+        let _: Vec<()> = self.pool.scope_with_executor(false, None, |scope| {
             for unit in work_units {
-                scope.spawn(async move { workload.execute(unit) });
+                scope.spawn(async move {
+                    workload.execute(unit);
+                });
             }
         });
-
-        let checksum = results
-            .into_iter()
-            .fold(0u64, |acc, value| acc.wrapping_add(value));
 
         let elapsed = start.elapsed();
 
@@ -44,7 +42,6 @@ impl Scheduler for BevyScheduler {
             completed_work_units,
             elapsed_ns: elapsed.as_nanos() as u64,
             work_units_per_second: completed_work_units as f64 / elapsed.as_secs_f64(),
-            checksum,
         }
     }
 }

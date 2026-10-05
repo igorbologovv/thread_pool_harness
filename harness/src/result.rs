@@ -11,9 +11,6 @@ pub struct RunResult {
 
     /// Number of completed work units per second.
     pub work_units_per_second: f64,
-
-    /// Deterministic control value aggregated from all work-unit results.
-    pub checksum: u64,
 }
 
 impl fmt::Display for RunResult {
@@ -24,11 +21,10 @@ impl fmt::Display for RunResult {
             "Elapsed              : {:.3} ms",
             self.elapsed_ns as f64 / 1_000_000.0
         )?;
-        writeln!(
+        write!(
             f,
             "Throughput           : {:.2} work units/s",
             self.work_units_per_second
-        )?;
-        write!(f, "Checksum             : {}", self.checksum)
+        )
     }
 }

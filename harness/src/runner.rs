@@ -25,20 +25,8 @@ where
 
     let mut results = Vec::with_capacity(measured_runs.get());
 
-    let first = run_once();
-    let expected_checksum = first.checksum;
-
-    results.push(first);
-
-    for _ in 1..measured_runs.get() {
-        let result = run_once();
-
-        assert_eq!(
-            result.checksum, expected_checksum,
-            "checksum mismatch between benchmark runs"
-        );
-
-        results.push(result);
+    for _ in 0..measured_runs.get() {
+        results.push(run_once());
     }
 
     if let Some(control) = perf.as_mut() {
