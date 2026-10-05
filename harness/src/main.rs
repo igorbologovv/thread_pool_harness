@@ -1,4 +1,5 @@
 mod cli;
+mod delivery;
 mod perf_control;
 mod result;
 mod runner;
@@ -6,11 +7,12 @@ mod schedulers;
 mod summary;
 mod workload;
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use clap::Parser;
 
 use cli::{Cli, SchedulerKind, WorkloadKind};
+use delivery::DeliverySchedule;
 use perf_control::PerfControl;
 use runner::run_repeated;
 use schedulers::{
@@ -30,6 +32,15 @@ fn main() {
         work_units: cli.work_units.get(),
         seed: cli.seed,
     };
+
+    let delivery = DeliverySchedule::generate(
+        cli.delivery_mode(),
+        cli.work_units.get(),
+        Duration::from_millis(cli.arrival_window_ms.get()),
+        cli.arrival_seed,
+    );
+
+    println!("{delivery}\n");
 
     let mut perf = match (&cli.perf_control, &cli.perf_ack) {
         (Some(control_path), Some(ack_path)) => Some(
@@ -55,7 +66,7 @@ fn main() {
                 &workload_config,
             ));
 
-            run_selected_scheduler(&cli, &workload, perf.as_mut());
+            run_selected_scheduler(&cli, &workload, &delivery, perf.as_mut());
         }
 
         WorkloadKind::BlsAggregateVerify => {
@@ -70,13 +81,17 @@ fn main() {
                 &workload_config,
             ));
 
-            run_selected_scheduler(&cli, &workload, perf.as_mut());
+            run_selected_scheduler(&cli, &workload, &delivery, perf.as_mut());
         }
     }
 }
 
-fn run_selected_scheduler<W>(cli: &Cli, workload: &Arc<W>, perf: Option<&mut PerfControl>)
-where
+fn run_selected_scheduler<W>(
+    cli: &Cli,
+    workload: &Arc<W>,
+    delivery: &DeliverySchedule,
+    perf: Option<&mut PerfControl>,
+) where
     W: Workload,
 {
     match cli.scheduler {
@@ -84,20 +99,20 @@ where
             let scheduler =
                 RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
 
-            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
+            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf);
         }
 
         SchedulerKind::Bevy => {
             let scheduler = BevyScheduler::new(cli.workers);
 
-            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
+            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf);
         }
 
         SchedulerKind::Threadance => {
             let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
                 .expect("failed to create Threadance thread pool");
 
-            run_benchmark(&scheduler, workload, cli.warmup, cli.runs, perf);
+            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf);
         }
     }
 }
@@ -105,6 +120,7 @@ where
 fn run_benchmark<S, W>(
     scheduler: &S,
     workload: &Arc<W>,
+    delivery: &DeliverySchedule,
     warmup: usize,
     runs: NonZeroUsize,
     perf: Option<&mut PerfControl>,
@@ -112,7 +128,7 @@ fn run_benchmark<S, W>(
     S: Scheduler,
     W: Workload,
 {
-    let results = run_repeated(warmup, runs, perf, || scheduler.run(workload));
+    let results = run_repeated(warmup, runs, perf, || scheduler.run(workload, delivery));
 
     let summary = RunSummary::from_results(&results);
 

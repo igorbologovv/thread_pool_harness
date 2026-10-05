@@ -1,8 +1,13 @@
-use std::{num::NonZeroUsize, sync::Arc, time::Instant};
+use std::{num::NonZeroUsize, sync::Arc};
 
-use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder, prelude::*};
+use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder};
 
-use crate::{result::RunResult, schedulers::Scheduler, workload::Workload};
+use crate::{
+    delivery::{DeliverySchedule, run_with_delivery},
+    result::RunResult,
+    schedulers::Scheduler,
+    workload::Workload,
+};
 
 pub struct RayonScheduler {
     pool: ThreadPool,
@@ -19,24 +24,12 @@ impl RayonScheduler {
 }
 
 impl Scheduler for RayonScheduler {
-    fn run<W: Workload>(&self, workload: &Arc<W>) -> RunResult {
-        let work_units = workload.work_units();
-        let completed_work_units = work_units.len() as u64;
-
-        let start = Instant::now();
-
-        self.pool.install(|| {
-            work_units
-                .par_iter()
-                .for_each(|unit| workload.execute(unit));
-        });
-
-        let elapsed = start.elapsed();
-
-        RunResult {
-            completed_work_units,
-            elapsed_ns: elapsed.as_nanos() as u64,
-            work_units_per_second: completed_work_units as f64 / elapsed.as_secs_f64(),
-        }
+    fn run<W: Workload>(&self, workload: &Arc<W>, delivery: &DeliverySchedule) -> RunResult {
+        run_with_delivery(workload, delivery, |workload, unit, completion| {
+            self.pool.spawn(move || {
+                workload.execute(&unit);
+                completion.complete_one();
+            });
+        })
     }
 }

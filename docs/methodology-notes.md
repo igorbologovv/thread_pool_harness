@@ -214,3 +214,38 @@ Completion synchronization remains inside the measured interval because
 determining that all submitted work has finished is necessary scheduler
 behavior.
 
+## 2026-10-05: Deterministic workload-delivery schedules
+
+### Decision
+
+The harness supports four workload-delivery conditions:
+
+- `all-at-once`: all work units are submitted immediately;
+- `steady-arrivals`: low-variability pseudo-random inter-arrival gaps;
+- `variable-arrivals`: moderately variable pseudo-random inter-arrival gaps;
+- `bursty-arrivals`: highly variable pseudo-random inter-arrival gaps.
+
+Scheduled delivery uses a separate arrival seed from the workload-generation
+seed. The complete delivery schedule is generated before warm-up and
+measurement and is reused for every benchmark repetition.
+
+Raw inter-arrival weights are drawn from seeded Weibull distributions with
+shape parameters 4.0, 1.0, and 0.5 for steady, variable, and bursty delivery,
+respectively. The generated gaps are then normalized so that the first arrival
+occurs at time zero and the final arrival occurs exactly at the configured
+arrival-window boundary.
+
+Consequently, for a fixed work-unit count and arrival window, the scheduled
+delivery modes have the same total work and the same mean offered arrival rate.
+They differ in the temporal variability of task arrivals.
+
+All scheduler adapters use the same harness-level asynchronous submission and
+completion protocol. Each completed work unit performs one atomic decrement,
+and the final completion wakes the benchmark thread. This avoids changing the
+scheduler adapter implementation when the delivery condition changes.
+
+Absolute delivery deadlines are calculated relative to the benchmark start
+time. The pacer sleeps until `start + emit_offset`, rather than sleeping for a
+sequence of relative gaps, so timing error does not accumulate across the
+schedule.
+
