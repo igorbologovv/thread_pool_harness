@@ -19,18 +19,20 @@ where
         run_once();
     }
 
-    if let Some(control) = perf.as_mut() {
-        control.enable().expect("failed to enable perf counters");
-    }
-
     let mut results = Vec::with_capacity(measured_runs.get());
 
     for _ in 0..measured_runs.get() {
-        results.push(run_once());
-    }
+        if let Some(control) = perf.as_mut() {
+            control.enable().expect("failed to enable perf counters");
+        }
 
-    if let Some(control) = perf.as_mut() {
-        control.disable().expect("failed to disable perf counters");
+        let result = run_once();
+
+        if let Some(control) = perf.as_mut() {
+            control.disable().expect("failed to disable perf counters");
+        }
+
+        results.push(result);
     }
 
     results
