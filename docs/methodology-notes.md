@@ -374,3 +374,101 @@ generated workload-delivery schedule.
 
 Queue capacity may later be varied deliberately as a separate Threadance
 configuration parameter.
+
+## 2026-10-06: Per-run perf measurement
+
+### Decision
+
+The earlier accumulated `perf stat` measurement across all measured
+repetitions is superseded by per-run profiling.
+
+When profiling is enabled, each measured benchmark repetition receives a
+dedicated `perf stat` session attached to the benchmark process.
+
+The perf counters are initially disabled. They are enabled immediately before
+the scheduler run begins and disabled immediately after the scheduler run
+finishes.
+
+Warm-up repetitions are not profiled.
+
+Perf process startup, shutdown, JSON parsing, and SQLite storage occur outside
+the measured benchmark interval.
+
+The harness supports three profiling modes:
+
+- `none`: harness wall-clock measurements only;
+- `standard`: primary CPU and scheduler counters;
+- `deep`: standard counters plus cache and TLB counters.
+
+The standard event set is:
+
+- `task-clock`;
+- `cycles`;
+- `instructions`;
+- `branches`;
+- `branch-misses`;
+- `context-switches`;
+- `cpu-migrations`;
+- `page-faults`.
+
+Deep profiling additionally requests:
+
+- `cache-references`;
+- `cache-misses`;
+- `L1-dcache-loads`;
+- `L1-dcache-load-misses`;
+- `LLC-loads`;
+- `LLC-load-misses`;
+- `dTLB-loads`;
+- `dTLB-load-misses`;
+- `iTLB-loads`;
+- `iTLB-load-misses`.
+
+Every measured run stores its raw perf JSON output and parsed counters in
+SQLite.
+
+The perf event runtime and percentage-running fields are also retained so
+counter multiplexing can be detected during analysis.
+
+Results from different profiling modes should not be mixed when comparing
+elapsed-time measurements, because the enabled counter sets and profiling
+overhead differ.
+
+## 2026-10-06: Multi-pass deep perf profiling
+
+The public profiling modes are `none`, `standard`, and `deep`.
+
+`standard` is the primary measurement mode. Each measured repetition executes
+the workload once and collects task-clock, cycles, instructions, branches,
+branch misses, context switches, CPU migrations, and page faults. This event
+set was validated with 100% event running time on the development machine.
+
+`deep` is diagnostic. It does not request all additional PMU events
+simultaneously because pilot measurements showed substantial multiplexing.
+
+Instead, the same benchmark configuration is repeated using several small perf
+event groups:
+
+- cache: task-clock, cache-references, cache-misses;
+- l1d: task-clock, L1-dcache-loads, L1-dcache-load-misses;
+- dtlb: task-clock, l1_dtlb_misses, l2_dtlb_misses;
+- itlb: task-clock, bp_l1_tlb_miss_l2_tlb_hit, l2_itlb_misses.
+
+For `--runs N`, each deep group receives N separate physical measured
+executions. Warm-up repetitions are performed before each group.
+
+Measurements from different deep groups are therefore separate executions and
+must not be described as counters collected from the same physical run.
+
+Deep elapsed times are diagnostic and are not mixed with the primary standard
+performance results.
+
+SQLite records the physical perf pass and the repetition index inside that
+pass.
+
+On the Zen 3 development machine, the generic dTLB/iTLB load and miss aliases
+were not used for final diagnostic interpretation. The deep TLB passes instead
+use the available Zen 3-specific perf events.
+
+For instruction translation, L1 ITLB misses can be interpreted as the sum of
+`bp_l1_tlb_miss_l2_tlb_hit` and `l2_itlb_misses`.

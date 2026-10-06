@@ -9,18 +9,16 @@ mod summary;
 mod workload;
 
 use std::{
-    num::NonZeroUsize,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
 
-use cli::{Cli, SchedulerKind, WorkloadKind};
+use cli::{Cli, ProfileMode, SchedulerKind, WorkloadKind};
 use delivery::DeliverySchedule;
-use perf_control::PerfControl;
-use result::RunResult;
-use runner::run_repeated;
+use perf_control::DEEP_PASSES;
+use runner::{RepeatedRunOutput, run_repeated};
 use schedulers::{
     Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
 };
@@ -40,7 +38,7 @@ fn main() {
         .expect("system clock is before Unix epoch")
         .as_secs()
         .try_into()
-        .expect("benchmark timestamp does not fit into i64");
+        .expect("benchmark timestamp does not fit i64");
 
     let common_config = CommonWorkloadConfig {
         work_units: cli.work_units.get(),
@@ -55,21 +53,14 @@ fn main() {
     );
 
     println!("{delivery}\n");
+    println!("Profile mode: {:?}\n", cli.profile,);
 
-    let mut perf = match (&cli.perf_control, &cli.perf_ack) {
-        (Some(control_path), Some(ack_path)) => Some(
-            PerfControl::connect(control_path, ack_path)
-                .expect("failed to connect to perf control FIFOs"),
-        ),
-        (None, None) => None,
-        _ => panic!("--perf-control and --perf-ack must be provided together"),
-    };
-
-    let results = match cli.workload {
+    let output = match cli.workload {
         WorkloadKind::ComputeHeavy => {
-            let operations_per_work_unit = cli
-                .operations_per_work_unit
-                .expect("--operations-per-work-unit is required for compute-heavy");
+            let operations_per_work_unit = cli.operations_per_work_unit.expect(
+                "--operations-per-work-unit \
+                         is required for compute-heavy",
+            );
 
             let workload_config = ComputeHeavyConfig {
                 operations_per_work_unit: operations_per_work_unit.get(),
@@ -80,13 +71,15 @@ fn main() {
                 &workload_config,
             ));
 
-            run_selected_scheduler(&cli, &workload, &delivery, perf.as_mut())
+            run_selected_scheduler(&cli, &workload, &delivery)
         }
 
         WorkloadKind::BlsAggregateVerify => {
             let workload_config = BlsAggregateVerifyConfig {
                 validators: cli.validators.get(),
+
                 signers_per_certificate: cli.signers_per_certificate.get(),
+
                 certificates_per_work_unit: cli.certificates_per_work_unit.get(),
             };
 
@@ -95,16 +88,15 @@ fn main() {
                 &workload_config,
             ));
 
-            run_selected_scheduler(&cli, &workload, &delivery, perf.as_mut())
+            run_selected_scheduler(&cli, &workload, &delivery)
         }
     };
 
-    // Storage begins only after all measured benchmark runs have completed.
     let mut database = BenchmarkDb::open(&cli.database, benchmark_started_unix_seconds)
         .expect("failed to open benchmark database");
 
     let stored = database
-        .store_experiment(&cli, &results)
+        .store_experiment(&cli, &output.results, &output.perf_captures)
         .expect("failed to store benchmark results");
 
     println!(
@@ -119,8 +111,7 @@ fn run_selected_scheduler<W>(
     cli: &Cli,
     workload: &Arc<W>,
     delivery: &DeliverySchedule,
-    perf: Option<&mut PerfControl>,
-) -> Vec<RunResult>
+) -> RepeatedRunOutput
 where
     W: Workload,
 {
@@ -129,41 +120,61 @@ where
             let scheduler =
                 RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
 
-            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf)
+            run_benchmark(cli, &scheduler, workload, delivery)
         }
 
         SchedulerKind::Bevy => {
             let scheduler = BevyScheduler::new(cli.workers);
 
-            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf)
+            run_benchmark(cli, &scheduler, workload, delivery)
         }
 
         SchedulerKind::Threadance => {
             let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
                 .expect("failed to create Threadance thread pool");
 
-            run_benchmark(&scheduler, workload, delivery, cli.warmup, cli.runs, perf)
+            run_benchmark(cli, &scheduler, workload, delivery)
         }
     }
 }
 
 fn run_benchmark<S, W>(
+    cli: &Cli,
     scheduler: &S,
     workload: &Arc<W>,
     delivery: &DeliverySchedule,
-    warmup: usize,
-    runs: NonZeroUsize,
-    perf: Option<&mut PerfControl>,
-) -> Vec<RunResult>
+) -> RepeatedRunOutput
 where
     S: Scheduler,
     W: Workload,
 {
-    let results = run_repeated(warmup, runs, perf, || scheduler.run(workload, delivery));
+    let output = run_repeated(cli.warmup, cli.runs, cli.profile, || {
+        scheduler.run(workload, delivery)
+    });
 
-    let summary = RunSummary::from_results(&results);
+    match cli.profile {
+        ProfileMode::Deep => {
+            let runs_per_pass = cli.runs.get();
 
-    println!("{summary}");
+            for (pass_index, pass) in DEEP_PASSES.iter().enumerate() {
+                let start = pass_index * runs_per_pass;
 
-    results
+                let end = start + runs_per_pass;
+
+                println!("Deep pass: {}", pass.name,);
+
+                let summary = RunSummary::from_results(&output.results[start..end]);
+
+                println!("{summary}");
+            }
+        }
+
+        ProfileMode::None | ProfileMode::Standard => {
+            let summary = RunSummary::from_results(&output.results);
+
+            println!("{summary}");
+        }
+    }
+
+    output
 }

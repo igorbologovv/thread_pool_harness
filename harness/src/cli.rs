@@ -99,23 +99,17 @@ pub struct Cli {
     #[arg(long, default_value = "50")]
     pub runs: NonZeroUsize,
 
-    /// Profiling mode associated with this benchmark.
+    /// Profiling mode.
     ///
-    /// Perf event collection for standard/deep modes is wired separately.
+    /// `none` records only harness timing.
+    /// `standard` records the primary perf counters used in experiments.
+    /// `deep` records additional cache and TLB counters using separate diagnostic perf passes.
     #[arg(long, value_enum, default_value = "none")]
     pub profile: ProfileMode,
 
     /// SQLite database used to store benchmark metadata and measured runs.
     #[arg(long, default_value = "results/benchmarks.sqlite3")]
     pub database: PathBuf,
-
-    /// FIFO used to send measurement-control commands to perf.
-    #[arg(long)]
-    pub perf_control: Option<PathBuf>,
-
-    /// FIFO used to receive acknowledgements from perf.
-    #[arg(long)]
-    pub perf_ack: Option<PathBuf>,
 }
 
 impl Cli {

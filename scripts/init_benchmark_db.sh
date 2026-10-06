@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-    echo "error: run this somewhere inside the git repository"
-    exit 1
-}
-
-SCHEMA="$ROOT/harness/sql/schema.sql"
+ROOT="$(git rev-parse --show-toplevel)"
 DB="${1:-$ROOT/results/benchmarks.sqlite3}"
 
-command -v sqlite3 >/dev/null 2>&1 || {
-    echo "error: sqlite3 is not installed"
-    exit 1
-}
+SCHEMA="$ROOT/harness/sql/schema.sql"
+MIGRATION="$ROOT/harness/sql/migrations/002_perf_passes.sql"
 
 mkdir -p "$(dirname "$DB")"
 
@@ -22,13 +15,27 @@ PRAGMA foreign_keys = ON;
 .read $SCHEMA
 SQL
 
+HAS_PASS="$(sqlite3 "$DB" \
+    "SELECT COUNT(*)
+     FROM pragma_table_info('run')
+     WHERE name = 'perf_pass';")"
+
+if [[ "$HAS_PASS" == "0" ]]; then
+    echo "Applying perf-pass migration..."
+
+    sqlite3 "$DB" \
+        "DELETE FROM schema_migrations WHERE version = 2;"
+
+    sqlite3 "$DB" < "$MIGRATION"
+fi
+
 echo
 echo "Database initialized:"
 echo "  $DB"
+
 echo
-echo "Tables:"
-sqlite3 "$DB" ".tables"
-echo
-echo "Schema version:"
+echo "Schema:"
 sqlite3 "$DB" \
-    "SELECT version || ' - ' || description FROM schema_migrations ORDER BY version;"
+    'SELECT version || " - " || description
+     FROM schema_migrations
+     ORDER BY version;'

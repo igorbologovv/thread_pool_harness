@@ -12,10 +12,13 @@ use rusqlite::{Connection, params};
 use crate::{
     cli::{Cli, ProfileMode, SchedulerKind, WorkloadKind},
     delivery::DeliveryMode,
+    perf_control::{DEEP_PASSES, PerfCapture},
     result::RunResult,
 };
 
 const SCHEMA: &str = include_str!("../../sql/schema.sql");
+
+const MIGRATION_002_PERF_PASSES: &str = include_str!("../../sql/migrations/002_perf_passes.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -55,6 +58,7 @@ impl BenchmarkDb {
 
         // Keep database initialization tied to the source-controlled schema.
         connection.execute_batch(SCHEMA)?;
+        apply_migrations(&connection)?;
 
         let session_id = insert_session(&connection, started_unix_seconds)?;
 
@@ -71,17 +75,64 @@ impl BenchmarkDb {
         &mut self,
         cli: &Cli,
         results: &[RunResult],
+        perf_captures: &[Option<PerfCapture>],
     ) -> StorageResult<StoredBenchmark> {
-        if results.len() != cli.runs.get() {
+        let expected_results = match cli.profile {
+            ProfileMode::Deep => {
+                cli.runs
+                    .get()
+                    .checked_mul(DEEP_PASSES.len())
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "deep run count overflow")
+                    })?
+            }
+
+            ProfileMode::None | ProfileMode::Standard => cli.runs.get(),
+        };
+
+        if results.len() != expected_results {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "expected {} measured runs but received {} results",
-                    cli.runs.get(),
-                    results.len()
+                    "expected {expected_results} physical runs but received {}",
+                    results.len(),
                 ),
             )
             .into());
+        }
+
+        if perf_captures.len() != results.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "received {} results but {} perf captures",
+                    results.len(),
+                    perf_captures.len()
+                ),
+            )
+            .into());
+        }
+
+        match cli.profile {
+            ProfileMode::None => {
+                if perf_captures.iter().any(|capture| capture.is_some()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "profile=none produced perf data",
+                    )
+                    .into());
+                }
+            }
+
+            ProfileMode::Standard | ProfileMode::Deep => {
+                if perf_captures.iter().any(|capture| capture.is_none()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "profiled run missing perf capture",
+                    )
+                    .into());
+                }
+            }
         }
 
         let workers = usize_to_i64(cli.workers.get(), "workers")?;
@@ -200,29 +251,106 @@ impl BenchmarkDb {
         let experiment_id = tx.last_insert_rowid();
 
         {
-            let mut statement = tx.prepare(
+            let mut run_statement = tx.prepare(
                 "
                 INSERT INTO run (
                     experiment_id,
                     run_index,
+                    perf_pass,
+                    pass_run_index,
                     completed_work_units,
                     elapsed_ns,
                     work_units_per_second,
                     success,
                     error_text
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)
+                VALUES (
+                    ?1, ?2, ?3, ?4, ?5,
+                    ?6, ?7, 1, NULL
+                )
                 ",
             )?;
 
-            for (run_index, result) in results.iter().enumerate() {
-                statement.execute(params![
+            let mut capture_statement = tx.prepare(
+                "
+                INSERT INTO perf_capture (
+                    run_id,
+                    perf_command,
+                    raw_json,
+                    perf_exit_code
+                )
+                VALUES (?1, ?2, ?3, ?4)
+                ",
+            )?;
+
+            let mut metric_statement = tx.prepare(
+                "
+                INSERT INTO perf_metric (
+                    run_id,
+                    event_name,
+                    counter_value,
+                    unit,
+                    event_runtime_ns,
+                    percent_running,
+                    metric_value,
+                    metric_unit,
+                    status
+                )
+                VALUES (
+                    ?1, ?2, ?3, ?4, ?5,
+                    ?6, ?7, ?8, ?9
+                )
+                ",
+            )?;
+
+            for (run_index, (result, capture)) in
+                results.iter().zip(perf_captures.iter()).enumerate()
+            {
+                let perf_pass = capture
+                    .as_ref()
+                    .map(|capture| capture.pass_name.as_str())
+                    .unwrap_or("none");
+
+                let pass_run_index = match cli.profile {
+                    ProfileMode::Deep => run_index % cli.runs.get(),
+
+                    ProfileMode::None | ProfileMode::Standard => run_index,
+                };
+
+                run_statement.execute(params![
                     experiment_id,
-                    usize_to_i64(run_index, "run_index")?,
-                    u64_to_i64(result.completed_work_units, "completed_work_units")?,
-                    u64_to_i64(result.elapsed_ns, "elapsed_ns")?,
+                    usize_to_i64(run_index, "run_index",)?,
+                    perf_pass,
+                    usize_to_i64(pass_run_index, "pass_run_index",)?,
+                    u64_to_i64(result.completed_work_units, "completed_work_units",)?,
+                    u64_to_i64(result.elapsed_ns, "elapsed_ns",)?,
                     result.work_units_per_second,
                 ])?;
+
+                let run_id = tx.last_insert_rowid();
+
+                if let Some(capture) = capture {
+                    capture_statement.execute(params![
+                        run_id,
+                        capture.perf_command,
+                        capture.raw_json,
+                        capture.perf_exit_code,
+                    ])?;
+
+                    for metric in &capture.metrics {
+                        metric_statement.execute(params![
+                            run_id,
+                            metric.event_name,
+                            metric.counter_value,
+                            metric.unit,
+                            metric.event_runtime_ns,
+                            metric.percent_running,
+                            metric.metric_value,
+                            metric.metric_unit,
+                            metric.status,
+                        ])?;
+                    }
+                }
             }
         }
 
@@ -233,6 +361,30 @@ impl BenchmarkDb {
             experiment_id,
         })
     }
+}
+
+fn apply_migrations(connection: &Connection) -> StorageResult<()> {
+    let has_perf_pass: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pragma_table_info('run')
+            WHERE name = 'perf_pass'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_perf_pass {
+        // Version 2 may have been used by an abandoned local
+        // migration while developing the profiling design.
+        connection.execute("DELETE FROM schema_migrations WHERE version = 2", [])?;
+
+        connection.execute_batch(MIGRATION_002_PERF_PASSES)?;
+    }
+
+    Ok(())
 }
 
 fn insert_session(connection: &Connection, started_unix_seconds: i64) -> StorageResult<i64> {
