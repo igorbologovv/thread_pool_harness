@@ -99,6 +99,16 @@ pub struct Cli {
     #[arg(long, default_value = "50")]
     pub runs: NonZeroUsize,
 
+    /// Profiling mode associated with this benchmark.
+    ///
+    /// Perf event collection for standard/deep modes is wired separately.
+    #[arg(long, value_enum, default_value = "none")]
+    pub profile: ProfileMode,
+
+    /// SQLite database used to store benchmark metadata and measured runs.
+    #[arg(long, default_value = "results/benchmarks.sqlite3")]
+    pub database: PathBuf,
+
     /// FIFO used to send measurement-control commands to perf.
     #[arg(long)]
     pub perf_control: Option<PathBuf>,
@@ -136,6 +146,13 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProfileMode {
+    None,
+    Standard,
+    Deep,
 }
 
 impl fmt::Display for WorkloadKind {
