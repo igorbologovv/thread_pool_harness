@@ -102,6 +102,14 @@ impl DeliverySchedule {
     pub fn offsets(&self) -> &[Duration] {
         &self.offsets
     }
+
+    pub fn arrival_rate(&self) -> Option<f64> {
+        if self.mode == DeliveryMode::AllAtOnce || self.offsets.len() <= 1 {
+            return None;
+        }
+
+        Some((self.offsets.len() - 1) as f64 / self.arrival_window.as_secs_f64())
+    }
 }
 
 impl fmt::Display for DeliverySchedule {
@@ -111,6 +119,16 @@ impl fmt::Display for DeliverySchedule {
         writeln!(f, "  work units:     {}", self.offsets.len())?;
 
         if self.mode != DeliveryMode::AllAtOnce {
+            if let Some(arrival_rate) = self.arrival_rate() {
+                writeln!(f, "  arrival rate:   {arrival_rate:.3} work units/s")?;
+
+                writeln!(
+                    f,
+                    "  mean gap:       {:?}",
+                    Duration::from_secs_f64(1.0 / arrival_rate)
+                )?;
+            }
+
             writeln!(f, "  arrival window: {:?}", self.arrival_window)?;
             writeln!(f, "  arrival seed:   {}", self.arrival_seed)?;
 

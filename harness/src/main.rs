@@ -10,7 +10,7 @@ mod workload;
 
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
@@ -48,7 +48,7 @@ fn main() {
     let delivery = DeliverySchedule::generate(
         cli.delivery_mode(),
         cli.work_units.get(),
-        Duration::from_millis(cli.arrival_window_ms.get()),
+        cli.arrival_window().unwrap_or_default(),
         cli.arrival_seed,
     );
 

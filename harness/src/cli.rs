@@ -1,8 +1,4 @@
-use std::{
-    fmt,
-    num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
-};
+use std::{fmt, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use clap::{ArgGroup, Parser, ValueEnum};
 
@@ -54,11 +50,16 @@ pub struct Cli {
     #[arg(long)]
     pub bursty_arrivals: bool,
 
-    /// Time between the first and final scheduled work-unit arrival.
+    /// Mean scheduled arrival rate in work units per second.
     ///
-    /// Ignored by --all-at-once.
-    #[arg(long, default_value = "100")]
-    pub arrival_window_ms: NonZeroU64,
+    /// Required for scheduled delivery modes and invalid with --all-at-once.
+    #[arg(
+        long,
+        value_parser = parse_positive_f64,
+        required_unless_present = "all_at_once",
+        conflicts_with = "all_at_once"
+    )]
+    pub arrival_rate: Option<f64>,
 
     /// Seed used to generate the deterministic arrival schedule.
     ///
@@ -126,6 +127,33 @@ impl Cli {
             (false, false, false, true) => DeliveryMode::BurstyArrivals,
             _ => unreachable!("clap validates the delivery-mode argument group"),
         }
+    }
+
+    /// Arrival window implied by the requested mean arrival rate.
+    ///
+    /// For N arrivals there are N - 1 inter-arrival gaps:
+    ///
+    ///     T = (N - 1) / lambda
+    pub fn arrival_window(&self) -> Option<Duration> {
+        self.arrival_rate.map(|arrival_rate| {
+            if self.work_units.get() <= 1 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64((self.work_units.get() - 1) as f64 / arrival_rate)
+            }
+        })
+    }
+}
+
+fn parse_positive_f64(value: &str) -> Result<f64, String> {
+    let value: f64 = value
+        .parse()
+        .map_err(|_| "arrival rate must be a number".to_owned())?;
+
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err("arrival rate must be finite and greater than zero".to_owned())
     }
 }
 

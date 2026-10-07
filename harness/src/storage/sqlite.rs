@@ -19,6 +19,7 @@ use crate::{
 const SCHEMA: &str = include_str!("../../sql/schema.sql");
 
 const MIGRATION_002_PERF_PASSES: &str = include_str!("../../sql/migrations/002_perf_passes.sql");
+const MIGRATION_003_ARRIVAL_RATE: &str = include_str!("../../sql/migrations/003_arrival_rate.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -153,12 +154,13 @@ impl BenchmarkDb {
             DeliveryMode::AllAtOnce => None,
             DeliveryMode::SteadyArrivals
             | DeliveryMode::VariableArrivals
-            | DeliveryMode::BurstyArrivals => Some(u64_to_i64(
-                cli.arrival_window_ms.get(),
-                "arrival_window_ms",
-            )?),
+            | DeliveryMode::BurstyArrivals => cli
+                .arrival_window()
+                .map(|window| u128_to_i64(window.as_millis(), "arrival_window_ms"))
+                .transpose()?,
         };
 
+        let arrival_rate = cli.arrival_rate;
         let arrival_seed = u64_to_i64(cli.arrival_seed, "arrival_seed")?;
         let workload_seed = u64_to_i64(cli.seed, "workload_seed")?;
 
@@ -206,6 +208,7 @@ impl BenchmarkDb {
                 queue_capacity,
                 delivery_mode,
                 arrival_window_ms,
+                arrival_rate,
                 arrival_seed,
                 work_units,
                 workload_seed,
@@ -223,7 +226,7 @@ impl BenchmarkDb {
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, NULL, NULL
+                ?16, ?17, ?18, ?19, NULL, NULL
             )
             ",
             params![
@@ -235,6 +238,7 @@ impl BenchmarkDb {
                 queue_capacity,
                 delivery_mode.to_string(),
                 arrival_window_ms,
+                arrival_rate,
                 arrival_seed,
                 work_units,
                 workload_seed,
@@ -384,6 +388,22 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
         connection.execute_batch(MIGRATION_002_PERF_PASSES)?;
     }
 
+    let has_arrival_rate: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pragma_table_info('experiment')
+            WHERE name = 'arrival_rate'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_arrival_rate {
+        connection.execute_batch(MIGRATION_003_ARRIVAL_RATE)?;
+    }
+
     Ok(())
 }
 
@@ -519,6 +539,16 @@ fn usize_to_i64(value: usize, field: &str) -> StorageResult<i64> {
 }
 
 fn u64_to_i64(value: u64, field: &str) -> StorageResult<i64> {
+    i64::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{field} does not fit into SQLite INTEGER"),
+        )
+        .into()
+    })
+}
+
+fn u128_to_i64(value: u128, field: &str) -> StorageResult<i64> {
     i64::try_from(value).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

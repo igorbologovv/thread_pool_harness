@@ -472,3 +472,198 @@ use the available Zen 3-specific perf events.
 
 For instruction translation, L1 ITLB misses can be interpreted as the sum of
 `bp_l1_tlb_miss_l2_tlb_hit` and `l2_itlb_misses`.
+
+
+## 2026-10-07: Arrival-process parameters and BLS service-time calibration
+
+### Motivation
+
+The initial workload-delivery interface uses the qualitative labels
+`steady-arrivals`, `variable-arrivals`, and `bursty-arrivals`. These modes are
+useful as controlled presets, but the thesis needs numerical parameters so that
+arrival conditions can be selected and reported for a methodological reason
+rather than by choosing arrival-window values arbitrarily.
+
+For the scheduled modes, let \(N\) denote the number of work-unit arrivals.
+There are \(N-1\) inter-arrival gaps between those arrivals. Because the current
+pacer places the first arrival at time zero and the final arrival at the
+configured arrival-window boundary, the mean inter-arrival gap is approximately
+
+\[
+\overline{g} = \frac{\text{arrival window}}{N-1}.
+\]
+
+The corresponding mean arrival rate is approximately
+
+\[
+\lambda = \frac{N-1}{\text{arrival window}},
+\]
+
+where \(\lambda\) is measured in work units per second when the arrival window
+is expressed in seconds.
+
+Arrival rate alone does not describe how evenly work reaches the pool. Arrival
+variability is therefore described using the coefficient of variation of the
+inter-arrival gaps,
+
+\[
+CV = \frac{\sigma_g}{\mu_g},
+\]
+
+where \(\mu_g\) is the mean inter-arrival gap and \(\sigma_g\) is its standard
+deviation. A larger \(CV\) means that the gaps are more variable.
+
+`CV` is not a complete description of arbitrary production traffic because it
+does not encode the temporal ordering or correlation of the gaps. Two traces
+can have the same mean and the same `CV` while arranging short and long gaps
+differently.
+
+For the controlled thesis experiments this ambiguity is limited by keeping the
+arrival-process family fixed. The existing scheduled modes are generated from
+seeded Weibull-distributed gap weights and normalized to the same total arrival
+window. The qualitative delivery-mode names can therefore remain as convenient
+presets while numerical arrival-rate and variability values are used to
+describe the generated traffic.
+
+### Research parameters
+
+The current working research axis is
+
+\[
+(\rho,\ CV,\ \tau,\ S),
+\]
+
+where:
+
+- \(\rho\) is offered load relative to the configured worker capacity;
+- \(CV\) is the coefficient of variation of inter-arrival times;
+- \(\tau\) is the worker idle/spin threshold before blocking or sleeping;
+- \(S\) is the mean service time of one work unit.
+
+For \(W\) workers, a useful nominal offered-load definition is
+
+\[
+\rho = \frac{\lambda S}{W}.
+\]
+
+This should be interpreted as an idealized load parameter based on the
+single-thread service time. It is not the same as measured CPU utilization and
+does not assume that real multi-worker throughput scales perfectly linearly.
+Actual saturation and scaling remain empirical benchmark results.
+
+Introducing \(S\) allows arrival rates to be selected relative to the actual
+cost of the workload. The same numerical arrival rate may represent a light load
+for a cheap work unit and overload for an expensive one.
+
+The parameter \(\tau\) is currently a planned Threadance configuration
+parameter. The current Threadance implementation blocks on the channel receive
+operation when the queue is empty and does not yet expose a configurable
+spin-before-block threshold. Therefore \(\tau\) is not yet an implemented
+experimental axis.
+
+### Why pure service-time calibration is required
+
+A one-worker scheduler run is not a scheduler-free measurement. Even with one
+worker, Rayon still performs task submission, queueing and dequeueing, closure
+execution, and completion synchronization.
+
+An initial BLS pilot was run using Rayon with one worker and all work available
+at once.
+
+Configuration:
+
+- 100 work units;
+- 2000 validators;
+- 1600 signers per certificate;
+- 1 certificate verification per work unit;
+- 5 warm-up runs;
+- 20 measured runs.
+
+The observed median elapsed time was 153.686 ms, corresponding to approximately
+
+\[
+\frac{153.686\text{ ms}}{100}
+=
+1.537\text{ ms/work unit}.
+\]
+
+This value is useful as a one-worker scheduled baseline, but it should not be
+defined as the pure service time \(S\).
+
+It is also not valid to estimate scheduler overhead by simply subtracting a
+pure workload measurement from this Rayon measurement. During the all-at-once
+Rayon run, the benchmark thread can continue submitting later work while the
+single worker is already executing earlier work. The two measurements therefore
+have different execution paths. Small differences between them can include
+ordinary run-to-run variation as well as scheduler behavior.
+
+### Pure BLS service-time calibration
+
+A separate `service_time` calibration binary was added to measure the workload
+without Rayon, Bevy, or Threadance.
+
+Dataset generation occurs before the measured interval. During each measured
+run, the calibration executes the generated work units sequentially on the
+calling thread:
+
+~~~rust
+for unit in workload.work_units() {
+    workload.execute(unit);
+}
+~~~
+
+The same BLS configuration was used:
+
+- 100 work units;
+- 2000 validators;
+- 1600 signers per certificate;
+- 1 certificate verification per work unit;
+- 5 warm-up runs;
+- 20 measured runs.
+
+Observed calibration results:
+
+- mean run elapsed: 154.754 ms;
+- median run elapsed: 154.737 ms;
+- mean service time: 1.548 ms/work unit;
+- median service time: 1.547 ms/work unit.
+
+For this BLS configuration on the current development machine, the working
+service-time estimate is therefore
+
+\[
+\boxed{S \approx 1.547\text{ ms/work unit}}.
+\]
+
+The earlier one-worker Rayon result was approximately 0.7% lower than the pure
+calibration result. This is treated as measurement variation between different
+execution paths, not as evidence of negative scheduler overhead.
+
+### Consequence for arrival-rate selection
+
+With \(S\) calibrated, future arrival-rate values can be derived from a target
+nominal offered load instead of being selected arbitrarily.
+
+Rearranging
+
+\[
+\rho = \frac{\lambda S}{W}
+\]
+
+gives
+
+\[
+\lambda = \frac{\rho W}{S}.
+\]
+
+This provides a reproducible way to define light, moderate, and high offered-load
+conditions for a fixed workload and worker count.
+
+The resulting arrival-rate values must still be validated empirically because
+real multi-worker scaling, contention, cache behavior, and scheduler overhead
+can move the actual saturation point away from the idealized estimate.
+
+The next methodological step is to use the calibrated \(S\) to select initial
+arrival-rate points, then introduce explicit Threadance wait/wake policies and
+thread-pool-level counters so that performance differences can be related to
+worker idle, block, sleep, and wake behavior.
