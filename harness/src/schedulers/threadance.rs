@@ -1,6 +1,6 @@
-use std::{io, num::NonZeroUsize, sync::Arc};
+use std::{io, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use ::threadance::ThreadPool;
+use ::threadance::{ThreadPool, WaitStrategy};
 
 use crate::{
     delivery::{DeliverySchedule, run_with_delivery},
@@ -14,8 +14,18 @@ pub struct ThreadanceScheduler {
 }
 
 impl ThreadanceScheduler {
-    pub fn new(workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> io::Result<Self> {
-        let pool = ThreadPool::new(workers, queue_capacity)?;
+    pub fn new(
+        workers: NonZeroUsize,
+        queue_capacity: NonZeroUsize,
+        spin_us: u64,
+    ) -> io::Result<Self> {
+        let wait_strategy = if spin_us == 0 {
+            WaitStrategy::Block
+        } else {
+            WaitStrategy::SpinThenBlock(Duration::from_micros(spin_us))
+        };
+
+        let pool = ThreadPool::with_wait_strategy(workers, queue_capacity, wait_strategy)?;
 
         Ok(Self { pool })
     }

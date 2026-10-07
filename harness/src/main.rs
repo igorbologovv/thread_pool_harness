@@ -130,8 +130,9 @@ where
         }
 
         SchedulerKind::Threadance => {
-            let scheduler = ThreadanceScheduler::new(cli.workers, cli.queue_capacity)
-                .expect("failed to create Threadance thread pool");
+            let scheduler =
+                ThreadanceScheduler::new(cli.workers, cli.queue_capacity, cli.threadance_spin_us)
+                    .expect("failed to create Threadance thread pool");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }

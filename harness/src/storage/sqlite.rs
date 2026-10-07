@@ -20,6 +20,10 @@ const SCHEMA: &str = include_str!("../../sql/schema.sql");
 
 const MIGRATION_002_PERF_PASSES: &str = include_str!("../../sql/migrations/002_perf_passes.sql");
 const MIGRATION_003_ARRIVAL_RATE: &str = include_str!("../../sql/migrations/003_arrival_rate.sql");
+const MIGRATION_004_THREADANCE_WAIT: &str =
+    include_str!("../../sql/migrations/004_threadance_wait.sql");
+const MIGRATION_005_FIXED_ARRIVALS: &str =
+    include_str!("../../sql/migrations/005_fixed_arrivals.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -148,11 +152,19 @@ impl BenchmarkDb {
             SchedulerKind::Rayon | SchedulerKind::Bevy => None,
         };
 
+        let threadance_spin_us = match cli.scheduler {
+            SchedulerKind::Threadance => {
+                Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?)
+            }
+            SchedulerKind::Rayon | SchedulerKind::Bevy => None,
+        };
+
         let delivery_mode = cli.delivery_mode();
 
         let arrival_window_ms = match delivery_mode {
             DeliveryMode::AllAtOnce => None,
-            DeliveryMode::SteadyArrivals
+            DeliveryMode::FixedArrivals
+            | DeliveryMode::SteadyArrivals
             | DeliveryMode::VariableArrivals
             | DeliveryMode::BurstyArrivals => cli
                 .arrival_window()
@@ -206,6 +218,7 @@ impl BenchmarkDb {
                 profile_mode,
                 workers,
                 queue_capacity,
+                threadance_spin_us,
                 delivery_mode,
                 arrival_window_ms,
                 arrival_rate,
@@ -226,7 +239,8 @@ impl BenchmarkDb {
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, NULL, NULL
+                ?16, ?17, ?18, ?19, ?20,
+                NULL, NULL
             )
             ",
             params![
@@ -236,6 +250,7 @@ impl BenchmarkDb {
                 profile_name(cli.profile),
                 workers,
                 queue_capacity,
+                threadance_spin_us,
                 delivery_mode.to_string(),
                 arrival_window_ms,
                 arrival_rate,
@@ -402,6 +417,38 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
 
     if !has_arrival_rate {
         connection.execute_batch(MIGRATION_003_ARRIVAL_RATE)?;
+    }
+
+    let has_threadance_spin_us: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pragma_table_info('experiment')
+            WHERE name = 'threadance_spin_us'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_threadance_spin_us {
+        connection.execute_batch(MIGRATION_004_THREADANCE_WAIT)?;
+    }
+
+    let has_fixed_arrivals_migration: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM schema_migrations
+            WHERE version = 5
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_fixed_arrivals_migration {
+        connection.execute_batch(MIGRATION_005_FIXED_ARRIVALS)?;
     }
 
     Ok(())

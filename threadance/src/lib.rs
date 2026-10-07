@@ -2,11 +2,22 @@ use std::{
     fmt, io,
     num::NonZeroUsize,
     thread::{Builder, JoinHandle},
+    time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// Strategy used by idle workers while waiting for more work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitStrategy {
+    /// Block immediately when no work is available.
+    Block,
+
+    /// Actively poll for the configured duration, then block.
+    SpinThenBlock(Duration),
+}
 
 /// Fixed-size thread pool backed by a bounded shared work queue.
 pub struct ThreadPool {
@@ -17,9 +28,19 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
-    /// Creates a thread pool with a fixed number of worker threads and a
-    /// bounded shared job queue.
+    /// Creates a thread pool whose workers block immediately when the queue
+    /// is empty.
     pub fn new(num_workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> io::Result<Self> {
+        Self::with_wait_strategy(num_workers, queue_capacity, WaitStrategy::Block)
+    }
+
+    /// Creates a thread pool with an explicitly configured worker wait
+    /// strategy.
+    pub fn with_wait_strategy(
+        num_workers: NonZeroUsize,
+        queue_capacity: NonZeroUsize,
+        wait_strategy: WaitStrategy,
+    ) -> io::Result<Self> {
         let (job_sender, job_receiver) = bounded::<Job>(queue_capacity.get());
 
         let mut worker_handles: Vec<JoinHandle<()>> = Vec::with_capacity(num_workers.get());
@@ -27,25 +48,21 @@ impl ThreadPool {
         for index in 0..num_workers.get() {
             let job_receiver = job_receiver.clone();
 
-            let handle =
-                match Builder::new()
-                    .name(format!("threadance-{index:02}"))
-                    .spawn(move || {
-                        while let Ok(job) = job_receiver.recv() {
-                            job();
-                        }
-                    }) {
-                    Ok(handle) => handle,
-                    Err(error) => {
-                        drop(job_sender);
+            let handle = match Builder::new()
+                .name(format!("threadance-{index:02}"))
+                .spawn(move || worker_loop(job_receiver, wait_strategy))
+            {
+                Ok(handle) => handle,
+                Err(error) => {
+                    drop(job_sender);
 
-                        for handle in worker_handles {
-                            let _ = handle.join();
-                        }
-
-                        return Err(error);
+                    for handle in worker_handles {
+                        let _ = handle.join();
                     }
-                };
+
+                    return Err(error);
+                }
+            };
 
             worker_handles.push(handle);
         }
@@ -69,6 +86,44 @@ impl ThreadPool {
         sender
             .send(Box::new(job))
             .map_err(|_| ExecuteError::Disconnected)
+    }
+}
+
+fn worker_loop(receiver: Receiver<Job>, wait_strategy: WaitStrategy) {
+    while let Some(job) = receive_job(&receiver, wait_strategy) {
+        job();
+    }
+}
+
+fn receive_job(receiver: &Receiver<Job>, wait_strategy: WaitStrategy) -> Option<Job> {
+    match wait_strategy {
+        WaitStrategy::Block => receiver.recv().ok(),
+
+        WaitStrategy::SpinThenBlock(spin_duration) => {
+            if spin_duration.is_zero() {
+                return receiver.recv().ok();
+            }
+
+            let deadline = Instant::now()
+                .checked_add(spin_duration)
+                .expect("worker spin duration is too large");
+
+            loop {
+                match receiver.try_recv() {
+                    Ok(job) => return Some(job),
+
+                    Err(TryRecvError::Disconnected) => return None,
+
+                    Err(TryRecvError::Empty) => {
+                        if Instant::now() >= deadline {
+                            return receiver.recv().ok();
+                        }
+
+                        std::hint::spin_loop();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -107,15 +162,41 @@ mod tests {
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        time::Duration,
     };
 
-    use super::ThreadPool;
+    use super::{ThreadPool, WaitStrategy};
 
     #[test]
     fn executes_submitted_jobs() {
         let pool = ThreadPool::new(
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(16).unwrap(),
+        )
+        .unwrap();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..100 {
+            let counter = counter.clone();
+
+            pool.execute(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+            .unwrap();
+        }
+
+        drop(pool);
+
+        assert_eq!(counter.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn spin_then_block_executes_submitted_jobs() {
+        let pool = ThreadPool::with_wait_strategy(
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(16).unwrap(),
+            WaitStrategy::SpinThenBlock(Duration::from_micros(50)),
         )
         .unwrap();
 

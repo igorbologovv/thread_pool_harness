@@ -12,6 +12,7 @@ use crate::delivery::DeliveryMode;
         .multiple(false)
         .args([
             "all_at_once",
+            "fixed_arrivals",
             "steady_arrivals",
             "variable_arrivals",
             "bursty_arrivals",
@@ -34,9 +35,19 @@ pub struct Cli {
     #[arg(long, default_value = "1024")]
     pub queue_capacity: NonZeroUsize,
 
+    /// Time a Threadance worker actively polls an empty queue before blocking.
+    ///
+    /// Zero means immediate blocking.
+    #[arg(long, default_value_t = 0)]
+    pub threadance_spin_us: u64,
+
     /// Submit every work unit immediately at the start of the run.
     #[arg(long)]
     pub all_at_once: bool,
+
+    /// Deliver work units at deterministic periodic intervals.
+    #[arg(long)]
+    pub fixed_arrivals: bool,
 
     /// Deliver work units using low-variability pseudo-random inter-arrival gaps.
     #[arg(long)]
@@ -61,8 +72,9 @@ pub struct Cli {
     )]
     pub arrival_rate: Option<f64>,
 
-    /// Seed used to generate the deterministic arrival schedule.
+    /// Seed used to generate pseudo-random arrival schedules.
     ///
+    /// Ignored by --fixed-arrivals and --all-at-once.
     /// This is separate from --seed, which controls workload generation.
     #[arg(long, default_value_t = 1)]
     pub arrival_seed: u64,
@@ -117,14 +129,16 @@ impl Cli {
     pub fn delivery_mode(&self) -> DeliveryMode {
         match (
             self.all_at_once,
+            self.fixed_arrivals,
             self.steady_arrivals,
             self.variable_arrivals,
             self.bursty_arrivals,
         ) {
-            (true, false, false, false) => DeliveryMode::AllAtOnce,
-            (false, true, false, false) => DeliveryMode::SteadyArrivals,
-            (false, false, true, false) => DeliveryMode::VariableArrivals,
-            (false, false, false, true) => DeliveryMode::BurstyArrivals,
+            (true, false, false, false, false) => DeliveryMode::AllAtOnce,
+            (false, true, false, false, false) => DeliveryMode::FixedArrivals,
+            (false, false, true, false, false) => DeliveryMode::SteadyArrivals,
+            (false, false, false, true, false) => DeliveryMode::VariableArrivals,
+            (false, false, false, false, true) => DeliveryMode::BurstyArrivals,
             _ => unreachable!("clap validates the delivery-mode argument group"),
         }
     }

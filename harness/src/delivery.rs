@@ -19,6 +19,7 @@ const BURSTY_SHAPE: f64 = 0.5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryMode {
     AllAtOnce,
+    FixedArrivals,
     SteadyArrivals,
     VariableArrivals,
     BurstyArrivals,
@@ -27,7 +28,7 @@ pub enum DeliveryMode {
 impl DeliveryMode {
     fn weibull_shape(self) -> Option<f64> {
         match self {
-            Self::AllAtOnce => None,
+            Self::AllAtOnce | Self::FixedArrivals => None,
             Self::SteadyArrivals => Some(STEADY_SHAPE),
             Self::VariableArrivals => Some(VARIABLE_SHAPE),
             Self::BurstyArrivals => Some(BURSTY_SHAPE),
@@ -39,6 +40,7 @@ impl fmt::Display for DeliveryMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::AllAtOnce => "all-at-once",
+            Self::FixedArrivals => "fixed-arrivals",
             Self::SteadyArrivals => "steady-arrivals",
             Self::VariableArrivals => "variable-arrivals",
             Self::BurstyArrivals => "bursty-arrivals",
@@ -71,7 +73,18 @@ impl DeliverySchedule {
 
             _ if work_units == 1 => vec![Duration::ZERO],
 
-            _ => {
+            DeliveryMode::FixedArrivals => {
+                assert!(
+                    !arrival_window.is_zero(),
+                    "scheduled delivery requires a non-zero arrival window"
+                );
+
+                generate_fixed_offsets(work_units, arrival_window)
+            }
+
+            DeliveryMode::SteadyArrivals
+            | DeliveryMode::VariableArrivals
+            | DeliveryMode::BurstyArrivals => {
                 assert!(
                     !arrival_window.is_zero(),
                     "scheduled delivery requires a non-zero arrival window"
@@ -82,7 +95,7 @@ impl DeliverySchedule {
                     arrival_window,
                     arrival_seed,
                     mode.weibull_shape()
-                        .expect("scheduled delivery mode must define a Weibull shape"),
+                        .expect("pseudo-random delivery mode must define a Weibull shape"),
                 )
             }
         };
@@ -130,18 +143,54 @@ impl fmt::Display for DeliverySchedule {
             }
 
             writeln!(f, "  arrival window: {:?}", self.arrival_window)?;
-            writeln!(f, "  arrival seed:   {}", self.arrival_seed)?;
 
-            let shape = self
-                .mode
-                .weibull_shape()
-                .expect("scheduled delivery mode must define a Weibull shape");
+            match self.mode {
+                DeliveryMode::FixedArrivals => {
+                    write!(f, "  pattern:        deterministic periodic")
+                }
 
-            write!(f, "  Weibull shape:  {shape}")
+                DeliveryMode::SteadyArrivals
+                | DeliveryMode::VariableArrivals
+                | DeliveryMode::BurstyArrivals => {
+                    writeln!(f, "  arrival seed:   {}", self.arrival_seed)?;
+
+                    let shape = self
+                        .mode
+                        .weibull_shape()
+                        .expect("pseudo-random delivery mode must define a Weibull shape");
+
+                    write!(f, "  Weibull shape:  {shape}")
+                }
+
+                DeliveryMode::AllAtOnce => unreachable!(),
+            }
         } else {
             Ok(())
         }
     }
+}
+
+fn generate_fixed_offsets(work_units: usize, arrival_window: Duration) -> Vec<Duration> {
+    debug_assert!(work_units > 1);
+
+    let window_nanos = u64::try_from(arrival_window.as_nanos())
+        .expect("arrival window must fit in u64 nanoseconds");
+
+    let gap_count = (work_units - 1) as u128;
+
+    (0..work_units)
+        .map(|index| {
+            // Spread N arrivals uniformly across [0, T].
+            //
+            // Integer nanosecond resolution means adjacent gaps can differ by
+            // at most one nanosecond when T is not exactly divisible by N - 1.
+            let nanos = (u128::from(window_nanos) * index as u128) / gap_count;
+
+            Duration::from_nanos(
+                u64::try_from(nanos).expect("fixed arrival offset must fit in u64 nanoseconds"),
+            )
+        })
+        .collect()
 }
 
 fn generate_scheduled_offsets(
@@ -354,6 +403,7 @@ mod tests {
         let window = Duration::from_millis(100);
 
         for mode in [
+            DeliveryMode::FixedArrivals,
             DeliveryMode::SteadyArrivals,
             DeliveryMode::VariableArrivals,
             DeliveryMode::BurstyArrivals,
@@ -368,10 +418,34 @@ mod tests {
     }
 
     #[test]
+    fn fixed_arrivals_are_periodic_and_ignore_seed() {
+        let units = 11;
+        let window = Duration::from_millis(100);
+
+        let first = DeliverySchedule::generate(DeliveryMode::FixedArrivals, units, window, 1);
+
+        let second = DeliverySchedule::generate(DeliveryMode::FixedArrivals, units, window, 999);
+
+        // Fixed arrivals are deterministic: the seed must have no effect.
+        assert_eq!(first.offsets(), second.offsets());
+
+        let gaps: Vec<Duration> = first
+            .offsets()
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect();
+
+        assert_eq!(gaps.len(), units - 1);
+        assert!(gaps.iter().all(|gap| *gap == Duration::from_millis(10)));
+    }
+
+    #[test]
     fn delivery_modes_have_increasing_gap_variability() {
         let units = 10_000;
         let window = Duration::from_secs(10);
         let seed = 777;
+
+        let fixed = DeliverySchedule::generate(DeliveryMode::FixedArrivals, units, window, seed);
 
         let steady = DeliverySchedule::generate(DeliveryMode::SteadyArrivals, units, window, seed);
 
@@ -380,10 +454,12 @@ mod tests {
 
         let bursty = DeliverySchedule::generate(DeliveryMode::BurstyArrivals, units, window, seed);
 
+        let fixed_cv = gap_coefficient_of_variation(fixed.offsets());
         let steady_cv = gap_coefficient_of_variation(steady.offsets());
         let variable_cv = gap_coefficient_of_variation(variable.offsets());
         let bursty_cv = gap_coefficient_of_variation(bursty.offsets());
 
+        assert!(fixed_cv < steady_cv);
         assert!(steady_cv < variable_cv);
         assert!(variable_cv < bursty_cv);
     }
@@ -416,6 +492,7 @@ mod tests {
         const SEED: u64 = 777;
 
         for mode in [
+            DeliveryMode::FixedArrivals,
             DeliveryMode::SteadyArrivals,
             DeliveryMode::VariableArrivals,
             DeliveryMode::BurstyArrivals,

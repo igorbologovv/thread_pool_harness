@@ -131,6 +131,14 @@ CREATE TABLE IF NOT EXISTS experiment (
     -- NULL for schedulers where this parameter does not apply.
     queue_capacity                  INTEGER,
 
+    -- Threadance active-poll duration before blocking.
+    -- Zero means immediate blocking. NULL for other schedulers.
+    threadance_spin_us              INTEGER
+                                        CHECK (
+                                            threadance_spin_us IS NULL
+                                            OR threadance_spin_us >= 0
+                                        ),
+
     -- Work delivery
     delivery_mode                   TEXT NOT NULL
                                         CHECK (
@@ -353,6 +361,7 @@ SELECT
     e.profile_mode,
     e.workers,
     e.queue_capacity,
+    e.threadance_spin_us,
     e.delivery_mode,
     e.arrival_window_ms,
     e.arrival_seed,

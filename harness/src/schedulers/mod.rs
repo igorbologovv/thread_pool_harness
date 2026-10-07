@@ -118,6 +118,7 @@ mod tests {
         let scheduler = ThreadanceScheduler::new(
             NonZeroUsize::new(WORKERS).unwrap(),
             NonZeroUsize::new(WORK_UNITS).unwrap(),
+            0,
         )
         .unwrap();
 
