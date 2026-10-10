@@ -13,23 +13,30 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 INSERT OR IGNORE INTO schema_migrations (
     version,
     description
-) VALUES (
-    1,
-    'Initial benchmark storage schema'
-);
+) VALUES
+    (1, 'Initial benchmark storage schema'),
+    (2, 'Record physical perf pass for multi-pass deep profiling'),
+    (3, 'Add mean arrival rate to benchmark experiments'),
+    (4, 'Add Threadance worker spin-before-block duration'),
+    (5, 'Allow deterministic fixed-arrivals delivery mode'),
+    (6, 'Record actual wall-clock start time for measured runs'),
+    (7, 'Group benchmark sessions into campaigns');
 
 
 -- ============================================================
 -- Benchmark session
 --
--- One session represents one benchmark campaign / sweep on a
--- particular machine and repository state.
+-- One session represents one invocation of the benchmark harness.
+-- Multiple sessions may belong to the same benchmark campaign / sweep.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS benchmark_session (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
 
     started_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Groups separate harness invocations belonging to one sweep.
+    campaign_id         TEXT,
 
     -- Git state
     git_commit          TEXT NOT NULL,
@@ -144,6 +151,7 @@ CREATE TABLE IF NOT EXISTS experiment (
                                         CHECK (
                                             delivery_mode IN (
                                                 'all-at-once',
+                                                'fixed-arrivals',
                                                 'steady-arrivals',
                                                 'variable-arrivals',
                                                 'bursty-arrivals'
@@ -152,6 +160,13 @@ CREATE TABLE IF NOT EXISTS experiment (
 
     -- NULL for all-at-once.
     arrival_window_ms               INTEGER,
+
+    -- Mean work-unit arrival rate for paced delivery modes.
+    arrival_rate                    REAL
+                                        CHECK (
+                                            arrival_rate IS NULL
+                                            OR arrival_rate > 0
+                                        ),
 
     arrival_seed                    INTEGER NOT NULL,
 
@@ -211,7 +226,18 @@ CREATE TABLE IF NOT EXISTS run (
     run_index                   INTEGER NOT NULL
                                     CHECK (run_index >= 0),
 
+    -- Physical profiling pass. NULL for historical rows.
+    perf_pass                   TEXT,
+    pass_run_index              INTEGER,
+
+    -- Actual measured-run wall-clock start time.
     started_at                  TEXT DEFAULT CURRENT_TIMESTAMP,
+
+    started_unix_ns             INTEGER
+                                    CHECK (
+                                        started_unix_ns IS NULL
+                                        OR started_unix_ns >= 0
+                                    ),
 
     completed_work_units        INTEGER NOT NULL
                                     CHECK (completed_work_units >= 0),
@@ -318,6 +344,9 @@ CREATE TABLE IF NOT EXISTS perf_metric (
 -- Useful indexes
 -- ============================================================
 
+CREATE INDEX IF NOT EXISTS idx_benchmark_session_campaign
+    ON benchmark_session(campaign_id);
+
 CREATE INDEX IF NOT EXISTS idx_experiment_session
     ON experiment(session_id);
 
@@ -354,6 +383,10 @@ CREATE VIEW IF NOT EXISTS benchmark_run_view AS
 SELECT
     r.id                        AS run_id,
     r.run_index,
+    r.pass_run_index,
+    r.perf_pass,
+    r.started_at                AS run_started_at,
+    r.started_unix_ns,
 
     e.id                        AS experiment_id,
     e.scheduler,
@@ -364,6 +397,7 @@ SELECT
     e.threadance_spin_us,
     e.delivery_mode,
     e.arrival_window_ms,
+    e.arrival_rate,
     e.arrival_seed,
     e.work_units,
     e.workload_seed,
@@ -373,6 +407,8 @@ SELECT
     r.work_units_per_second,
 
     s.id                        AS session_id,
+    s.campaign_id,
+    s.started_at                AS session_started_at,
     s.git_commit,
     s.git_dirty,
     s.hostname,

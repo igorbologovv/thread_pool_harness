@@ -67,9 +67,7 @@ impl BenchmarkDb {
             ",
         )?;
 
-        // Keep database initialization tied to the source-controlled schema.
-        connection.execute_batch(SCHEMA)?;
-        apply_migrations(&connection)?;
+        initialize_schema(&connection)?;
 
         let session_id = insert_session(&connection, started_unix_seconds, campaign_id)?;
 
@@ -395,6 +393,50 @@ impl BenchmarkDb {
             experiment_id,
         })
     }
+}
+
+fn initialize_schema(connection: &Connection) -> StorageResult<()> {
+    let has_schema_migrations: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM sqlite_master
+            WHERE
+                type = 'table'
+                AND name = 'schema_migrations'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_schema_migrations {
+        let existing_user_tables: i64 = connection.query_row(
+            "
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE
+                type = 'table'
+                AND name NOT LIKE 'sqlite_%'
+            ",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if existing_user_tables != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "database contains tables but has no schema_migrations table",
+            )
+            .into());
+        }
+
+        // Brand-new databases start directly at the current schema.
+        // Migration files are only for upgrading older databases.
+        connection.execute_batch(SCHEMA)?;
+    }
+
+    apply_migrations(connection)
 }
 
 fn apply_migrations(connection: &Connection) -> StorageResult<()> {
