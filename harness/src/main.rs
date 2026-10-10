@@ -92,8 +92,12 @@ fn main() {
         }
     };
 
-    let mut database = BenchmarkDb::open(&cli.database, benchmark_started_unix_seconds)
-        .expect("failed to open benchmark database");
+    let mut database = BenchmarkDb::open(
+        &cli.database,
+        benchmark_started_unix_seconds,
+        cli.campaign_id.as_deref(),
+    )
+    .expect("failed to open benchmark database");
 
     let stored = database
         .store_experiment(&cli, &output.results, &output.perf_captures)

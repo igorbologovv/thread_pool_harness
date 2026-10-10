@@ -120,6 +120,11 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "none")]
     pub profile: ProfileMode,
 
+    /// Identifier grouping separate harness invocations into one
+    /// benchmark campaign or sweep.
+    #[arg(long)]
+    pub campaign_id: Option<String>,
+
     /// SQLite database used to store benchmark metadata and measured runs.
     #[arg(long, default_value = "results/benchmarks.sqlite3")]
     pub database: PathBuf,

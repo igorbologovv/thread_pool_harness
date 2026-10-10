@@ -51,7 +51,8 @@ if [[ ! -f "$TEMPLATE_DB" ]]; then
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT="results/sweeps/fixed-wait-${STAMP}"
+CAMPAIGN_ID="fixed-wait-${STAMP}"
+OUT="results/sweeps/${CAMPAIGN_ID}"
 
 mkdir -p "$OUT/logs"
 
@@ -60,6 +61,9 @@ PLAN="$OUT/plan.tsv"
 MANIFEST="$OUT/manifest.csv"
 ENVIRONMENT="$OUT/environment.txt"
 
+echo "Campaign:"
+echo "  $CAMPAIGN_ID"
+echo
 echo "Experiment output:"
 echo "  $OUT"
 echo
@@ -116,6 +120,7 @@ fi
 
 {
     echo "timestamp=$(date -Iseconds)"
+    echo "campaign_id=$CAMPAIGN_ID"
     echo "git_commit=$(git rev-parse HEAD)"
     echo "git_branch=$(git branch --show-current)"
     echo "kernel=$(uname -r)"
@@ -327,6 +332,7 @@ do
         --warmup "$WARMUP" \
         --runs "$RUNS" \
         --profile standard \
+        --campaign-id "$CAMPAIGN_ID" \
         --database "$DB" \
         2>&1 | tee "$LOG"
 
@@ -617,6 +623,9 @@ PY
 
 cat > "$OUT/README.txt" <<EOF2
 Fixed-arrival Threadance wait-policy sweep
+
+Campaign:
+    ${CAMPAIGN_ID}
 
 Service-time calibration:
     S = ${S_US} us/work unit

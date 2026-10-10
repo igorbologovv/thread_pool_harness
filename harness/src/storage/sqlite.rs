@@ -25,6 +25,7 @@ const MIGRATION_004_THREADANCE_WAIT: &str =
 const MIGRATION_005_FIXED_ARRIVALS: &str =
     include_str!("../../sql/migrations/005_fixed_arrivals.sql");
 const MIGRATION_006_RUN_TIMING: &str = include_str!("../../sql/migrations/006_run_timing.sql");
+const MIGRATION_007_CAMPAIGN_ID: &str = include_str!("../../sql/migrations/007_campaign_id.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -45,7 +46,11 @@ impl BenchmarkDb {
     ///
     /// Database creation and all inserts happen outside the measured benchmark
     /// interval.
-    pub fn open(path: &Path, started_unix_seconds: i64) -> StorageResult<Self> {
+    pub fn open(
+        path: &Path,
+        started_unix_seconds: i64,
+        campaign_id: Option<&str>,
+    ) -> StorageResult<Self> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -66,7 +71,7 @@ impl BenchmarkDb {
         connection.execute_batch(SCHEMA)?;
         apply_migrations(&connection)?;
 
-        let session_id = insert_session(&connection, started_unix_seconds)?;
+        let session_id = insert_session(&connection, started_unix_seconds, campaign_id)?;
 
         Ok(Self {
             connection,
@@ -477,10 +482,30 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
         connection.execute_batch(MIGRATION_006_RUN_TIMING)?;
     }
 
+    let has_campaign_id: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pragma_table_info('benchmark_session')
+            WHERE name = 'campaign_id'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_campaign_id {
+        connection.execute_batch(MIGRATION_007_CAMPAIGN_ID)?;
+    }
+
     Ok(())
 }
 
-fn insert_session(connection: &Connection, started_unix_seconds: i64) -> StorageResult<i64> {
+fn insert_session(
+    connection: &Connection,
+    started_unix_seconds: i64,
+    campaign_id: Option<&str>,
+) -> StorageResult<i64> {
     let git_root = git_root();
 
     let git_commit = git_root
@@ -535,6 +560,7 @@ fn insert_session(connection: &Connection, started_unix_seconds: i64) -> Storage
         "
         INSERT INTO benchmark_session (
             started_at,
+            campaign_id,
             git_commit,
             git_branch,
             git_dirty,
@@ -555,14 +581,16 @@ fn insert_session(connection: &Connection, started_unix_seconds: i64) -> Storage
         )
         VALUES (
             datetime(?1, 'unixepoch'),
-            ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10,
-            ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, NULL
+            ?2,
+            ?3, ?4, ?5, ?6,
+            ?7, ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14, ?15, ?16,
+            ?17, ?18, NULL
         )
         ",
         params![
             started_unix_seconds,
+            campaign_id,
             git_commit,
             git_branch,
             i64::from(git_dirty),
