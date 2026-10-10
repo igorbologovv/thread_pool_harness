@@ -24,6 +24,7 @@ const MIGRATION_004_THREADANCE_WAIT: &str =
     include_str!("../../sql/migrations/004_threadance_wait.sql");
 const MIGRATION_005_FIXED_ARRIVALS: &str =
     include_str!("../../sql/migrations/005_fixed_arrivals.sql");
+const MIGRATION_006_RUN_TIMING: &str = include_str!("../../sql/migrations/006_run_timing.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -277,6 +278,8 @@ impl BenchmarkDb {
                     run_index,
                     perf_pass,
                     pass_run_index,
+                    started_at,
+                    started_unix_ns,
                     completed_work_units,
                     elapsed_ns,
                     work_units_per_second,
@@ -284,8 +287,14 @@ impl BenchmarkDb {
                     error_text
                 )
                 VALUES (
-                    ?1, ?2, ?3, ?4, ?5,
-                    ?6, ?7, 1, NULL
+                    ?1, ?2, ?3, ?4,
+                    strftime(
+                        '%Y-%m-%dT%H:%M:%fZ',
+                        ?5 / 1000000000.0,
+                        'unixepoch'
+                    ),
+                    ?5, ?6, ?7, ?8,
+                    1, NULL
                 )
                 ",
             )?;
@@ -341,6 +350,7 @@ impl BenchmarkDb {
                     usize_to_i64(run_index, "run_index",)?,
                     perf_pass,
                     usize_to_i64(pass_run_index, "pass_run_index",)?,
+                    u64_to_i64(result.started_unix_ns, "started_unix_ns",)?,
                     u64_to_i64(result.completed_work_units, "completed_work_units",)?,
                     u64_to_i64(result.elapsed_ns, "elapsed_ns",)?,
                     result.work_units_per_second,
@@ -449,6 +459,22 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
 
     if !has_fixed_arrivals_migration {
         connection.execute_batch(MIGRATION_005_FIXED_ARRIVALS)?;
+    }
+
+    let has_run_timing_migration: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM schema_migrations
+            WHERE version = 6
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_run_timing_migration {
+        connection.execute_batch(MIGRATION_006_RUN_TIMING)?;
     }
 
     Ok(())

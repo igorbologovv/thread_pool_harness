@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread::{self, Thread},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use rand::{RngExt, SeedableRng, rngs::StdRng};
@@ -307,6 +307,13 @@ where
     let completed_work_units = work_units.len() as u64;
     let completion = Arc::new(Completion::new(work_units.len()));
 
+    let started_unix_ns: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_nanos()
+        .try_into()
+        .expect("run timestamp does not fit u64");
+
     let start = Instant::now();
 
     match schedule.mode() {
@@ -330,6 +337,7 @@ where
     let elapsed = start.elapsed();
 
     RunResult {
+        started_unix_ns,
         completed_work_units,
         elapsed_ns: elapsed.as_nanos() as u64,
         work_units_per_second: completed_work_units as f64 / elapsed.as_secs_f64(),

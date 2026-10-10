@@ -3,6 +3,10 @@ use std::fmt;
 /// Results produced by a single benchmark run.
 #[derive(Debug)]
 pub struct RunResult {
+    /// Wall-clock start of the measured run, in nanoseconds
+    /// since the Unix epoch.
+    pub started_unix_ns: u64,
+
     /// Number of work units completed during the run.
     pub completed_work_units: u64,
 
