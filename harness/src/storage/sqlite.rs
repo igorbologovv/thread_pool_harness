@@ -448,6 +448,24 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
 
     if !has_threadance_spin_us {
         connection.execute_batch(MIGRATION_004_THREADANCE_WAIT)?;
+    } else {
+        // The current baseline schema already contains
+        // threadance_spin_us. In that case migration 004 does not
+        // need to alter the table, but the migration history must
+        // still record that the schema includes version 4.
+        connection.execute(
+            "
+            INSERT OR IGNORE INTO schema_migrations (
+                version,
+                description
+            )
+            VALUES (
+                4,
+                'Add Threadance worker spin-before-block duration'
+            )
+            ",
+            [],
+        )?;
     }
 
     let has_fixed_arrivals_migration: bool = connection.query_row(
