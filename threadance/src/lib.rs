@@ -47,6 +47,7 @@ pub struct WaitStatsSnapshot {
     pub empty_observations: u64,
     pub parks: u64,
     pub wake_one_calls: u64,
+    pub sleeping_waiters: usize,
 }
 
 #[derive(Default)]
@@ -58,14 +59,6 @@ struct WaitStats {
 }
 
 impl WaitStats {
-    fn snapshot(&self) -> WaitStatsSnapshot {
-        WaitStatsSnapshot {
-            empty_observations: self.empty_observations.load(Ordering::Relaxed),
-            parks: self.parks.load(Ordering::Relaxed),
-            wake_one_calls: self.wake_one_calls.load(Ordering::Relaxed),
-        }
-    }
-
     fn reset(&self) {
         self.empty_observations.store(0, Ordering::Relaxed);
         self.parks.store(0, Ordering::Relaxed);
@@ -103,6 +96,7 @@ struct WakeEvent {
     generation: Mutex<u64>,
     condvar: Condvar,
     waiters: AtomicUsize,
+    sleeping_waiters: AtomicUsize,
     stats: WaitStats,
 }
 
@@ -133,6 +127,15 @@ impl WakeEvent {
         *generation = generation.wrapping_add(1);
         self.condvar.notify_all();
     }
+
+    fn snapshot(&self) -> WaitStatsSnapshot {
+        WaitStatsSnapshot {
+            empty_observations: self.stats.empty_observations.load(Ordering::Relaxed),
+            parks: self.stats.parks.load(Ordering::Relaxed),
+            wake_one_calls: self.stats.wake_one_calls.load(Ordering::Relaxed),
+            sleeping_waiters: self.sleeping_waiters.load(Ordering::Relaxed),
+        }
+    }
 }
 
 struct WakeWaiter<'a> {
@@ -146,7 +149,12 @@ impl WakeWaiter<'_> {
 
         let mut generation = self.event.generation.lock().unwrap();
         while *generation == self.generation {
+            // Increment while holding the same mutex used by wake_one(). Once
+            // Condvar::wait releases the mutex, a sender can acquire it and
+            // notify us without a lost-wakeup window.
+            self.event.sleeping_waiters.fetch_add(1, Ordering::Relaxed);
             generation = self.event.condvar.wait(generation).unwrap();
+            self.event.sleeping_waiters.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
@@ -360,7 +368,7 @@ impl ThreadPool {
     ///
     /// Leave this disabled for normal benchmark runs. The characterization
     /// utility enables it to observe when workers first see an empty queue and
-    /// when they actually enter the park path.
+    /// when they actually enter the sleep path.
     pub fn set_wait_instrumentation(&self, enabled: bool) {
         self.shared
             .wake_event
@@ -374,7 +382,7 @@ impl ThreadPool {
     }
 
     pub fn wait_stats(&self) -> WaitStatsSnapshot {
-        self.shared.wake_event.stats.snapshot()
+        self.shared.wake_event.snapshot()
     }
 
     /// Submits one job to the pool.
@@ -448,7 +456,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use super::{ThreadPool, WaitStrategy};
@@ -509,8 +517,8 @@ mod tests {
         pool.reset_wait_stats();
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while pool.wait_stats().parks == 0 {
-            assert!(Instant::now() < deadline, "worker never entered park path");
+        while pool.wait_stats().sleeping_waiters == 0 {
+            assert!(Instant::now() < deadline, "worker never entered sleep path");
             thread::yield_now();
         }
 
@@ -523,7 +531,7 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(1);
         while counter.load(Ordering::Relaxed) == 0 {
-            assert!(Instant::now() < deadline, "parked worker was not woken");
+            assert!(Instant::now() < deadline, "sleeping worker was not woken");
             thread::yield_now();
         }
     }
