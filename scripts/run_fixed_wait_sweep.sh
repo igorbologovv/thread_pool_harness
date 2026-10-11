@@ -20,18 +20,251 @@ set -euo pipefail
 #   CV       = 0 (deterministic periodic arrivals)
 # ============================================================
 
-S_US=1547
+# ------------------------------------------------------------
+# Required service-time calibration.
+# ------------------------------------------------------------
+
+CALIBRATION_FILE=""
+
+while (( $# > 0 )); do
+    case "$1" in
+        --calibration)
+            if (( $# < 2 )); then
+                echo "ERROR: --calibration requires a file path."
+                exit 2
+            fi
+
+            CALIBRATION_FILE="$2"
+            shift 2
+            ;;
+
+        -h|--help)
+            cat <<'EOF'
+Usage:
+  ./scripts/run_fixed_wait_sweep.sh \
+      --calibration PATH/TO/calibration.json
+
+A scheduler-free service-time calibration is mandatory because
+rho and tau/S depend on the measured service time S.
+
+Generate one with:
+  ./scripts/calibrate_service_time.sh
+EOF
+            exit 0
+            ;;
+
+        *)
+            echo "ERROR: unknown argument: $1"
+            echo
+            echo "Use --help for usage."
+            exit 2
+            ;;
+    esac
+done
+
+if [[ -z "$CALIBRATION_FILE" ]]; then
+    echo "ERROR: service-time calibration is required."
+    echo
+    echo "Run:"
+    echo "  ./scripts/calibrate_service_time.sh"
+    echo
+    echo "Then start this sweep with:"
+    echo "  ./scripts/run_fixed_wait_sweep.sh \\"
+    echo "      --calibration results/calibrations/.../calibration.json"
+    exit 2
+fi
+
+if [[ ! -f "$CALIBRATION_FILE" ]]; then
+    echo "ERROR: calibration file does not exist:"
+    echo "  $CALIBRATION_FILE"
+    exit 2
+fi
+
+
 WORKERS=8
 WORK_UNITS=200
 QUEUE_CAPACITY=1000
 
-WARMUP=10
-RUNS=50
+# Final measurements use a randomized blocked design.
+#
+# Every configuration still receives 50 measured repetitions total:
+#
+#   10 blocks * 5 measured runs = 50 runs/configuration
+#
+# The configuration order is independently randomized inside every block.
+# This prevents slow thermal, frequency, or background-system drift from
+# being systematically associated with one configuration.
+BLOCKS=10
+RUNS_PER_BLOCK=5
+
+# The first encounter with each configuration receives the full warm-up.
+# Later blocks still warm the newly created scheduler briefly, but avoid
+# repeating ten warm-up executions before every five measured runs.
+WARMUP_FIRST_BLOCK=10
+WARMUP_OTHER_BLOCKS=2
 
 WORKLOAD_SEED=1
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+# Resolve calibration path before changing/using it further.
+CALIBRATION_FILE="$(
+    realpath "$CALIBRATION_FILE"
+)"
+
+# ------------------------------------------------------------
+# Validate service-time calibration.
+#
+# A calibration is valid only for the workload configuration,
+# source revision and host on which it was measured.
+# ------------------------------------------------------------
+
+mapfile -t CALIBRATION_VALUES < <(
+    python3 - \
+        "$CALIBRATION_FILE" \
+        "$(git rev-parse HEAD)" \
+        "$(uname -m)" \
+        "$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)" \
+        "$WORKLOAD_SEED" \
+        <<'__VALIDATE_CALIBRATION__'
+import json
+import math
+import sys
+from pathlib import Path
+
+(
+    path,
+    current_commit,
+    current_arch,
+    current_cpu,
+    expected_seed,
+) = sys.argv[1:]
+
+try:
+    data = json.loads(Path(path).read_text())
+except Exception as exc:
+    raise SystemExit(
+        f"ERROR: could not read calibration JSON: {exc}"
+    )
+
+errors = []
+
+if data.get("schema_version") != 1:
+    errors.append(
+        "unsupported calibration schema_version "
+        f"{data.get('schema_version')!r}"
+    )
+
+if data.get("workload") != "bls-aggregate-verify":
+    errors.append(
+        "workload mismatch: expected "
+        "'bls-aggregate-verify', got "
+        f"{data.get('workload')!r}"
+    )
+
+config = data.get("workload_config", {})
+
+expected = {
+    "validators": 2000,
+    "signers_per_certificate": 1600,
+    "certificates_per_work_unit": 1,
+    "workload_seed": int(expected_seed),
+}
+
+for key, expected_value in expected.items():
+    actual = config.get(key)
+
+    if actual != expected_value:
+        errors.append(
+            f"{key} mismatch: calibration={actual!r}, "
+            f"experiment={expected_value!r}"
+        )
+
+service = data.get("service_time", {})
+
+try:
+    s_us = float(service["mean_us"])
+except Exception:
+    errors.append("service_time.mean_us is missing or invalid")
+    s_us = math.nan
+
+if not math.isfinite(s_us) or s_us <= 0:
+    errors.append(
+        f"service_time.mean_us must be finite and > 0, "
+        f"got {s_us!r}"
+    )
+
+provenance = data.get("provenance", {})
+
+cal_commit = provenance.get("git_commit")
+
+if cal_commit != current_commit:
+    errors.append(
+        "git commit mismatch: "
+        f"calibration={cal_commit!r}, current={current_commit!r}"
+    )
+
+cal_arch = provenance.get("architecture")
+
+if cal_arch != current_arch:
+    errors.append(
+        "architecture mismatch: "
+        f"calibration={cal_arch!r}, current={current_arch!r}"
+    )
+
+cal_cpu = provenance.get("cpu_model")
+
+if cal_cpu != current_cpu:
+    errors.append(
+        "CPU model mismatch: "
+        f"calibration={cal_cpu!r}, current={current_cpu!r}"
+    )
+
+if errors:
+    print("ERROR: calibration is not valid for this sweep.",
+          file=sys.stderr)
+    print(file=sys.stderr)
+
+    for error in errors:
+        print(f"  - {error}", file=sys.stderr)
+
+    print(file=sys.stderr)
+    print(
+        "Generate a fresh calibration with:",
+        file=sys.stderr,
+    )
+    print(
+        "  ./scripts/calibrate_service_time.sh",
+        file=sys.stderr,
+    )
+
+    raise SystemExit(1)
+
+print(f"{s_us:.6f}")
+print(data.get("calibration_id", "unknown"))
+print(service.get("samples", "unknown"))
+print(service.get("median_us", "nan"))
+__VALIDATE_CALIBRATION__
+)
+
+if (( ${#CALIBRATION_VALUES[@]} != 4 )); then
+    echo "ERROR: calibration validation returned unexpected data."
+    exit 1
+fi
+
+S_US="${CALIBRATION_VALUES[0]}"
+CALIBRATION_ID="${CALIBRATION_VALUES[1]}"
+CALIBRATION_SAMPLES="${CALIBRATION_VALUES[2]}"
+CALIBRATION_MEDIAN_US="${CALIBRATION_VALUES[3]}"
+
+echo "Service-time calibration:"
+echo "  file      = $CALIBRATION_FILE"
+echo "  id        = $CALIBRATION_ID"
+echo "  mean S    = $S_US us/work unit"
+echo "  median S  = $CALIBRATION_MEDIAN_US us/work unit"
+echo "  samples   = $CALIBRATION_SAMPLES"
+echo
 
 # ------------------------------------------------------------
 # Reproducibility checks
@@ -121,6 +354,11 @@ fi
 {
     echo "timestamp=$(date -Iseconds)"
     echo "campaign_id=$CAMPAIGN_ID"
+    echo "calibration_file=$CALIBRATION_FILE"
+    echo "calibration_id=$CALIBRATION_ID"
+    echo "service_time_mean_us=$S_US"
+    echo "service_time_median_us=$CALIBRATION_MEDIAN_US"
+    echo "calibration_samples=$CALIBRATION_SAMPLES"
     echo "git_commit=$(git rev-parse HEAD)"
     echo "git_branch=$(git branch --show-current)"
     echo "kernel=$(uname -r)"
@@ -239,14 +477,16 @@ for rho in rhos:
             "prediction": prediction,
         })
 
-rng = random.Random(20261007)
-rng.shuffle(rows)
+BLOCKS = 10
+RANDOMIZATION_SEED = 20261007
 
 with open(sys.argv[1], "w", newline="") as f:
     writer = csv.writer(f, delimiter="\t", lineterminator="\n")
 
     writer.writerow([
-        "order",
+        "block",
+        "order_in_block",
+        "global_order",
         "rho",
         "tau_ratio",
         "tau_us",
@@ -256,17 +496,31 @@ with open(sys.argv[1], "w", newline="") as f:
         "prediction",
     ])
 
-    for order, row in enumerate(rows, 1):
-        writer.writerow([
-            order,
-            f"{row['rho']:.4f}",
-            f"{row['tau_ratio']:.6f}",
-            row["tau_us"],
-            f"{row['arrival_rate']:.6f}",
-            f"{row['predicted_idle_us']:.3f}",
-            f"{row['rho_star']:.6f}",
-            row["prediction"],
-        ])
+    global_order = 0
+
+    for block in range(1, BLOCKS + 1):
+        # Start every block from the same complete configuration set,
+        # then randomize independently with a deterministic seed.
+        block_rows = [row.copy() for row in rows]
+
+        rng = random.Random(RANDOMIZATION_SEED + block)
+        rng.shuffle(block_rows)
+
+        for order_in_block, row in enumerate(block_rows, 1):
+            global_order += 1
+
+            writer.writerow([
+                block,
+                order_in_block,
+                global_order,
+                f"{row['rho']:.4f}",
+                f"{row['tau_ratio']:.6f}",
+                row["tau_us"],
+                f"{row['arrival_rate']:.6f}",
+                f"{row['predicted_idle_us']:.3f}",
+                f"{row['rho_star']:.6f}",
+                row["prediction"],
+            ])
 PY
 
 echo
@@ -275,7 +529,7 @@ column -t -s $'\t' "$PLAN"
 echo
 
 printf '%s\n' \
-'experiment_id,order,rho,tau_ratio,tau_us,arrival_rate,predicted_idle_us,rho_star,prediction,log' \
+'experiment_id,block,order_in_block,global_order,rho,tau_ratio,tau_us,arrival_rate,predicted_idle_us,rho_star,prediction,log' \
 > "$MANIFEST"
 
 # ------------------------------------------------------------
@@ -286,7 +540,9 @@ TOTAL="$(($(wc -l < "$PLAN") - 1))"
 CURRENT=0
 
 while IFS=$'\t' read -r \
-    ORDER \
+    BLOCK \
+    ORDER_IN_BLOCK \
+    GLOBAL_ORDER \
     RHO \
     TAU_RATIO \
     TAU_US \
@@ -297,9 +553,17 @@ while IFS=$'\t' read -r \
 do
     CURRENT=$((CURRENT + 1))
 
+    if (( BLOCK == 1 )); then
+        WARMUP_THIS="$WARMUP_FIRST_BLOCK"
+    else
+        WARMUP_THIS="$WARMUP_OTHER_BLOCKS"
+    fi
+
     echo
     echo "============================================================"
     echo "Experiment $CURRENT / $TOTAL"
+    echo "block            = $BLOCK / $BLOCKS"
+    echo "order in block   = $ORDER_IN_BLOCK"
     echo "rho              = $RHO"
     echo "tau/S            = $TAU_RATIO"
     echo "tau              = $TAU_US us"
@@ -310,7 +574,7 @@ do
     echo "============================================================"
     echo
 
-    LOG="$OUT/logs/$(printf '%02d' "$ORDER")-rho-${RHO}-tau-${TAU_US}.log"
+    LOG="$OUT/logs/block-$(printf '%02d' "$BLOCK")-order-$(printf '%02d' "$ORDER_IN_BLOCK")-rho-${RHO}-tau-${TAU_US}.log"
 
     BEFORE_ID="$(
         sqlite3 "$DB" 'SELECT COALESCE(MAX(id), 0) FROM experiment;'
@@ -329,8 +593,8 @@ do
         --fixed-arrivals \
         --arrival-rate "$ARRIVAL_RATE" \
         --seed "$WORKLOAD_SEED" \
-        --warmup "$WARMUP" \
-        --runs "$RUNS" \
+        --warmup "$WARMUP_THIS" \
+        --runs "$RUNS_PER_BLOCK" \
         --profile standard \
         --campaign-id "$CAMPAIGN_ID" \
         --database "$DB" \
@@ -345,9 +609,11 @@ do
         exit 1
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$EXPERIMENT_ID" \
-        "$ORDER" \
+        "$BLOCK" \
+        "$ORDER_IN_BLOCK" \
+        "$GLOBAL_ORDER" \
         "$RHO" \
         "$TAU_RATIO" \
         "$TAU_US" \
@@ -382,6 +648,7 @@ fi
 python3 - "$DB" "$MANIFEST" "$OUT" "$S_US" "$WORK_UNITS" <<'PY'
 import csv
 import math
+import random
 import sqlite3
 import statistics
 import sys
@@ -445,6 +712,9 @@ for (
             "experiment_id": experiment_id,
             "run_id": run_id,
             "run_index": run_index,
+            "block": int(meta["block"]),
+            "order_in_block": int(meta["order_in_block"]),
+            "global_order": int(meta["global_order"]),
             "rho": float(meta["rho"]),
             "tau_ratio": float(meta["tau_ratio"]),
             "tau_us": int(meta["tau_us"]),
@@ -463,6 +733,9 @@ raw_columns = [
     "experiment_id",
     "run_id",
     "run_index",
+    "block",
+    "order_in_block",
+    "global_order",
     "rho",
     "tau_ratio",
     "tau_us",
@@ -492,23 +765,100 @@ with open(raw_path, "w", newline="") as f:
         writer.writerow({name: row.get(name) for name in raw_columns})
 
 
-def mean_sd_ci(values):
+BOOTSTRAP_REPLICATES = 10_000
+BOOTSTRAP_SEED = 20261011
+
+
+def percentile(sorted_values, probability):
+    if not sorted_values:
+        return math.nan
+
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+
+    position = probability * (len(sorted_values) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+
+    if lower == upper:
+        return sorted_values[lower]
+
+    weight = position - lower
+
+    return (
+        sorted_values[lower] * (1.0 - weight)
+        + sorted_values[upper] * weight
+    )
+
+
+def bootstrap_mean_ci(values, seed):
+    if len(values) == 1:
+        return (values[0], values[0])
+
+    rng = random.Random(seed)
+    n = len(values)
+
+    bootstrap_means = []
+
+    for _ in range(BOOTSTRAP_REPLICATES):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        bootstrap_means.append(statistics.mean(sample))
+
+    bootstrap_means.sort()
+
+    return (
+        percentile(bootstrap_means, 0.025),
+        percentile(bootstrap_means, 0.975),
+    )
+
+
+def descriptive_statistics(values, seed):
     values = [float(v) for v in values if v is not None]
 
     if not values:
-        return (math.nan, math.nan, math.nan)
+        return {
+            "n": 0,
+            "mean": math.nan,
+            "sd": math.nan,
+            "variance": math.nan,
+            "median": math.nan,
+            "q1": math.nan,
+            "q3": math.nan,
+            "iqr": math.nan,
+            "ci95_low": math.nan,
+            "ci95_high": math.nan,
+        }
+
+    ordered = sorted(values)
 
     mean = statistics.mean(values)
+    median = statistics.median(values)
 
-    if len(values) == 1:
-        return (mean, math.nan, math.nan)
+    if len(values) > 1:
+        sd = statistics.stdev(values)
+        variance = statistics.variance(values)
+    else:
+        sd = math.nan
+        variance = math.nan
 
-    sd = statistics.stdev(values)
+    q1 = percentile(ordered, 0.25)
+    q3 = percentile(ordered, 0.75)
+    iqr = q3 - q1
 
-    # Approximate 95% CI; n=50 here, so normal approximation is fine.
-    ci = 1.96 * sd / math.sqrt(len(values))
+    ci95_low, ci95_high = bootstrap_mean_ci(values, seed)
 
-    return (mean, sd, ci)
+    return {
+        "n": len(values),
+        "mean": mean,
+        "sd": sd,
+        "variance": variance,
+        "median": median,
+        "q1": q1,
+        "q3": q3,
+        "iqr": iqr,
+        "ci95_low": ci95_low,
+        "ci95_high": ci95_high,
+    }
 
 
 groups = defaultdict(list)
@@ -535,18 +885,53 @@ summary_columns = [
     "rho_star",
     "prediction",
     "n",
+
     "elapsed_ms_mean",
-    "elapsed_ms_ci95",
+    "elapsed_ms_sd",
+    "elapsed_ms_variance",
+    "elapsed_ms_median",
+    "elapsed_ms_q1",
+    "elapsed_ms_q3",
+    "elapsed_ms_iqr",
+    "elapsed_ms_ci95_low",
+    "elapsed_ms_ci95_high",
+
     "task_clock_mean",
-    "task_clock_ci95",
+    "task_clock_sd",
+    "task_clock_variance",
+    "task_clock_median",
+    "task_clock_q1",
+    "task_clock_q3",
+    "task_clock_iqr",
+    "task_clock_ci95_low",
+    "task_clock_ci95_high",
     "task_clock_per_work_unit",
+
     "cycles_mean",
-    "cycles_ci95",
+    "cycles_sd",
+    "cycles_variance",
+    "cycles_median",
+    "cycles_q1",
+    "cycles_q3",
+    "cycles_iqr",
+    "cycles_ci95_low",
+    "cycles_ci95_high",
     "cycles_per_work_unit",
+
     "context_switches_mean",
-    "context_switches_ci95",
+    "context_switches_sd",
+    "context_switches_variance",
+    "context_switches_median",
+    "context_switches_q1",
+    "context_switches_q3",
+    "context_switches_iqr",
+    "context_switches_ci95_low",
+    "context_switches_ci95_high",
     "context_switches_per_work_unit",
+
     "cpu_migrations_mean",
+    "cpu_migrations_sd",
+    "cpu_migrations_median",
 ]
 
 summary_path = f"{out_dir}/summary.csv"
@@ -568,24 +953,37 @@ with open(summary_path, "w", newline="") as f:
 
         rows = groups[key]
 
-        elapsed, _, elapsed_ci = mean_sd_ci(
-            [row.get("elapsed_ms") for row in rows]
+        # Use deterministic, non-parametric bootstrap confidence intervals
+        # instead of assuming a Gaussian run distribution.
+        #
+        # The seed is varied by experiment and metric so rerunning analysis
+        # remains reproducible while bootstrap samples are independent across
+        # the reported quantities.
+        seed_base = BOOTSTRAP_SEED + int(rho * 10_000) + tau_us * 101
+
+        elapsed = descriptive_statistics(
+            [row.get("elapsed_ms") for row in rows],
+            seed_base + 1,
         )
 
-        task_clock, _, task_clock_ci = mean_sd_ci(
-            [row.get("task-clock") for row in rows]
+        task_clock = descriptive_statistics(
+            [row.get("task-clock") for row in rows],
+            seed_base + 2,
         )
 
-        cycles, _, cycles_ci = mean_sd_ci(
-            [row.get("cycles") for row in rows]
+        cycles = descriptive_statistics(
+            [row.get("cycles") for row in rows],
+            seed_base + 3,
         )
 
-        ctx, _, ctx_ci = mean_sd_ci(
-            [row.get("context-switches") for row in rows]
+        ctx = descriptive_statistics(
+            [row.get("context-switches") for row in rows],
+            seed_base + 4,
         )
 
-        migrations, _, _ = mean_sd_ci(
-            [row.get("cpu-migrations") for row in rows]
+        migrations = descriptive_statistics(
+            [row.get("cpu-migrations") for row in rows],
+            seed_base + 5,
         )
 
         writer.writerow({
@@ -597,18 +995,59 @@ with open(summary_path, "w", newline="") as f:
             "rho_star": rho_star,
             "prediction": prediction,
             "n": len(rows),
-            "elapsed_ms_mean": elapsed,
-            "elapsed_ms_ci95": elapsed_ci,
-            "task_clock_mean": task_clock,
-            "task_clock_ci95": task_clock_ci,
-            "task_clock_per_work_unit": task_clock / work_units,
-            "cycles_mean": cycles,
-            "cycles_ci95": cycles_ci,
-            "cycles_per_work_unit": cycles / work_units,
-            "context_switches_mean": ctx,
-            "context_switches_ci95": ctx_ci,
-            "context_switches_per_work_unit": ctx / work_units,
-            "cpu_migrations_mean": migrations,
+
+            "elapsed_ms_mean": elapsed["mean"],
+            "elapsed_ms_sd": elapsed["sd"],
+            "elapsed_ms_variance": elapsed["variance"],
+            "elapsed_ms_median": elapsed["median"],
+            "elapsed_ms_q1": elapsed["q1"],
+            "elapsed_ms_q3": elapsed["q3"],
+            "elapsed_ms_iqr": elapsed["iqr"],
+            "elapsed_ms_ci95_low": elapsed["ci95_low"],
+            "elapsed_ms_ci95_high": elapsed["ci95_high"],
+
+            "task_clock_mean": task_clock["mean"],
+            "task_clock_sd": task_clock["sd"],
+            "task_clock_variance": task_clock["variance"],
+            "task_clock_median": task_clock["median"],
+            "task_clock_q1": task_clock["q1"],
+            "task_clock_q3": task_clock["q3"],
+            "task_clock_iqr": task_clock["iqr"],
+            "task_clock_ci95_low": task_clock["ci95_low"],
+            "task_clock_ci95_high": task_clock["ci95_high"],
+            "task_clock_per_work_unit": (
+                task_clock["mean"] / work_units
+            ),
+
+            "cycles_mean": cycles["mean"],
+            "cycles_sd": cycles["sd"],
+            "cycles_variance": cycles["variance"],
+            "cycles_median": cycles["median"],
+            "cycles_q1": cycles["q1"],
+            "cycles_q3": cycles["q3"],
+            "cycles_iqr": cycles["iqr"],
+            "cycles_ci95_low": cycles["ci95_low"],
+            "cycles_ci95_high": cycles["ci95_high"],
+            "cycles_per_work_unit": (
+                cycles["mean"] / work_units
+            ),
+
+            "context_switches_mean": ctx["mean"],
+            "context_switches_sd": ctx["sd"],
+            "context_switches_variance": ctx["variance"],
+            "context_switches_median": ctx["median"],
+            "context_switches_q1": ctx["q1"],
+            "context_switches_q3": ctx["q3"],
+            "context_switches_iqr": ctx["iqr"],
+            "context_switches_ci95_low": ctx["ci95_low"],
+            "context_switches_ci95_high": ctx["ci95_high"],
+            "context_switches_per_work_unit": (
+                ctx["mean"] / work_units
+            ),
+
+            "cpu_migrations_mean": migrations["mean"],
+            "cpu_migrations_sd": migrations["sd"],
+            "cpu_migrations_median": migrations["median"],
         })
 
 conn.close()
@@ -628,7 +1067,13 @@ Campaign:
     ${CAMPAIGN_ID}
 
 Service-time calibration:
-    S = ${S_US} us/work unit
+    calibration id   = ${CALIBRATION_ID}
+    calibration file = ${CALIBRATION_FILE}
+    mean S           = ${S_US} us/work unit
+    median S         = ${CALIBRATION_MEDIAN_US} us/work unit
+    samples          = ${CALIBRATION_SAMPLES}
+
+The mean service time is used for rho and tau/S calculations.
 
 Workers:
     W = ${WORKERS}
@@ -636,11 +1081,23 @@ Workers:
 Work units/run:
     N = ${WORK_UNITS}
 
-Warmups/configuration:
-    ${WARMUP}
+Repetition design:
+    randomized blocked design
 
-Measured runs/configuration:
-    ${RUNS}
+Blocks:
+    ${BLOCKS}
+
+Measured runs/block/configuration:
+    ${RUNS_PER_BLOCK}
+
+Total measured runs/configuration:
+    $((BLOCKS * RUNS_PER_BLOCK))
+
+Warmups/configuration in first block:
+    ${WARMUP_FIRST_BLOCK}
+
+Warmups/configuration in later blocks:
+    ${WARMUP_OTHER_BLOCKS}
 
 Arrival process:
     deterministic periodic (CV approximately zero)
@@ -672,7 +1129,16 @@ Important interpretation:
     wait-policy efficiency in those regimes.
 
 Execution order:
-    deterministically randomized with seed 20261007.
+    randomized independently within every block.
+
+Randomization:
+    deterministic and reproducible from base seed 20261007;
+    block b uses seed 20261007 + b.
+
+Rationale:
+    blocking distributes slow thermal, CPU-frequency, and background-system
+    drift across configurations instead of measuring all 50 repetitions of
+    one configuration consecutively.
 EOF2
 
 echo

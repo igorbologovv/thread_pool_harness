@@ -1,7 +1,12 @@
 #[path = "../workload/mod.rs"]
 mod workload;
 
-use std::time::{Duration, Instant};
+use std::{
+    fs::File,
+    io::Write,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 
@@ -33,6 +38,10 @@ struct Cli {
 
     #[arg(long, default_value_t = 20)]
     runs: usize,
+
+    /// Optional CSV file receiving every measured calibration run.
+    #[arg(long)]
+    samples_csv: Option<PathBuf>,
 }
 
 fn run_once<W: Workload>(workload: &W) -> Duration {
@@ -76,19 +85,36 @@ fn main() {
         samples_ns.push(elapsed.as_nanos() as f64);
     }
 
-    samples_ns.sort_by(f64::total_cmp);
+    // Preserve measurement order in samples_ns so temporal drift can
+    // be inspected later from the raw calibration data.
+    let mut ordered_samples_ns = samples_ns.clone();
+    ordered_samples_ns.sort_by(f64::total_cmp);
 
     let mean_ns = samples_ns.iter().sum::<f64>() / samples_ns.len() as f64;
 
-    let median_ns = if samples_ns.len() % 2 == 0 {
-        let upper = samples_ns.len() / 2;
-        (samples_ns[upper - 1] + samples_ns[upper]) / 2.0
+    let median_ns = if ordered_samples_ns.len() % 2 == 0 {
+        let upper = ordered_samples_ns.len() / 2;
+        (ordered_samples_ns[upper - 1] + ordered_samples_ns[upper]) / 2.0
     } else {
-        samples_ns[samples_ns.len() / 2]
+        ordered_samples_ns[ordered_samples_ns.len() / 2]
     };
 
     let mean_service_ns = mean_ns / cli.work_units as f64;
     let median_service_ns = median_ns / cli.work_units as f64;
+
+    if let Some(path) = &cli.samples_csv {
+        let mut file = File::create(path).expect("failed to create calibration sample CSV");
+
+        writeln!(file, "run_index,elapsed_ns,service_time_ns")
+            .expect("failed to write calibration CSV header");
+
+        for (run_index, elapsed_ns) in samples_ns.iter().enumerate() {
+            let service_time_ns = elapsed_ns / cli.work_units as f64;
+
+            writeln!(file, "{run_index},{elapsed_ns:.0},{service_time_ns:.6}")
+                .expect("failed to write calibration sample");
+        }
+    }
 
     println!("Pure single-thread service-time calibration");
     println!("Work units              : {}", cli.work_units);
