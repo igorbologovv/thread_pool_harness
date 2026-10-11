@@ -19,12 +19,7 @@ impl ThreadanceScheduler {
         queue_capacity: NonZeroUsize,
         spin_us: u64,
     ) -> io::Result<Self> {
-        let wait_strategy = if spin_us == 0 {
-            WaitStrategy::Block
-        } else {
-            WaitStrategy::SpinThenBlock(Duration::from_micros(spin_us))
-        };
-
+        let wait_strategy = WaitStrategy::SpinThenPark(Duration::from_micros(spin_us));
         let pool = ThreadPool::with_wait_strategy(workers, queue_capacity, wait_strategy)?;
 
         Ok(Self { pool })
