@@ -116,8 +116,11 @@ CALIBRATION_FILE="$(
 # ------------------------------------------------------------
 # Validate service-time calibration.
 #
-# A calibration is valid only for the workload configuration,
-# source revision and host on which it was measured.
+# A calibration is valid only for the matching workload configuration,
+# host, and calibration-relevant source.
+#
+# The entire Git HEAD does not need to match. Documentation, analysis
+# scripts and sweep-only changes do not alter scheduler-free service time.
 # ------------------------------------------------------------
 
 mapfile -t CALIBRATION_VALUES < <(
@@ -127,9 +130,11 @@ mapfile -t CALIBRATION_VALUES < <(
         "$(uname -m)" \
         "$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)" \
         "$WORKLOAD_SEED" \
+        "$WORK_UNITS" \
         <<'__VALIDATE_CALIBRATION__'
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 
@@ -139,6 +144,7 @@ from pathlib import Path
     current_arch,
     current_cpu,
     expected_seed,
+    expected_work_units,
 ) = sys.argv[1:]
 
 try:
@@ -166,6 +172,7 @@ if data.get("workload") != "bls-aggregate-verify":
 config = data.get("workload_config", {})
 
 expected = {
+    "calibration_work_units": int(expected_work_units),
     "validators": 2000,
     "signers_per_certificate": 1600,
     "certificates_per_work_unit": 1,
@@ -199,11 +206,55 @@ provenance = data.get("provenance", {})
 
 cal_commit = provenance.get("git_commit")
 
-if cal_commit != current_commit:
-    errors.append(
-        "git commit mismatch: "
-        f"calibration={cal_commit!r}, current={current_commit!r}"
+if not cal_commit:
+    errors.append("calibration provenance.git_commit is missing")
+else:
+    # Calibration validity depends only on source that can change the
+    # scheduler-free BLS service-time measurement.
+    #
+    # Documentation, analysis scripts, sweep orchestration and unrelated
+    # scheduler code do not invalidate S.
+    calibration_relevant_paths = [
+        "Cargo.toml",
+        "Cargo.lock",
+        "harness/Cargo.toml",
+        "harness/src/bin/service_time.rs",
+        "harness/src/workload",
+    ]
+
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            f"{cal_commit}..{current_commit}",
+            "--",
+            *calibration_relevant_paths,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+
+    if result.returncode != 0:
+        errors.append(
+            "could not compare calibration-relevant source between "
+            f"{cal_commit!r} and {current_commit!r}: "
+            f"{result.stderr.strip()}"
+        )
+    else:
+        changed = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+
+        if changed:
+            errors.append(
+                "calibration-relevant source changed since calibration "
+                f"commit {cal_commit}: "
+                + ", ".join(changed)
+            )
 
 cal_arch = provenance.get("architecture")
 
