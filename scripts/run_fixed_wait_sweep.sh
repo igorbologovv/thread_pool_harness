@@ -451,25 +451,21 @@ fi
 # ------------------------------------------------------------
 # Generate experiment matrix.
 #
-# tau/S:
-#   0
-#   0.10
-#   0.25
-#   0.50
-#   1.00
+# Spin-before-block duration tau is varied directly in microseconds.
 #
-# rho values deliberately include the theoretical crossover
-# regions:
+# Earlier pilot measurements showed that the interesting wait/wake
+# transition occurs below approximately 96 us, so the final sweep
+# concentrates measurement density in that region:
 #
-#   tau/S = 1.00 -> rho* = 0.500
-#   tau/S = 0.50 -> rho* = 0.667
-#   tau/S = 0.25 -> rho* = 0.800
-#   tau/S = 0.10 -> rho* = 0.909
+#   tau = 0, 8, 16, 24, 32, 48, 64, 96 us
 #
-# plus low-load and high-load endpoints.
+# tau/S is derived from the calibrated service time S rather than
+# being used to define the grid.
 #
-# Execution order is randomized with a FIXED seed so thermal /
-# frequency drift is not systematically aligned with rho or tau.
+# rho values cover low through high offered load.
+#
+# Execution order is randomized independently within each block
+# with a fixed seed.
 # ------------------------------------------------------------
 
 python3 - "$PLAN" "$S_US" "$BLOCKS" "$WORKERS" <<'PY'
@@ -490,12 +486,15 @@ rhos = [
     0.95,
 ]
 
-tau_ratios = [
-    0.00,
-    0.10,
-    0.25,
-    0.50,
-    1.00,
+tau_values_us = [
+    0,
+    8,
+    16,
+    24,
+    32,
+    48,
+    64,
+    96,
 ]
 
 rows = []
@@ -506,9 +505,7 @@ for rho in rhos:
     # Simplified ideal fixed-arrival model.
     predicted_idle_us = S_US * (1.0 / rho - 1.0)
 
-    for tau_ratio in tau_ratios:
-        tau_us = round(S_US * tau_ratio)
-
+    for tau_us in tau_values_us:
         actual_tau_ratio = tau_us / S_US
         rho_star = 1.0 / (1.0 + actual_tau_ratio)
 

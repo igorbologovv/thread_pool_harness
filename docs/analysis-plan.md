@@ -54,21 +54,38 @@ The tested offered-load values are:
 - 0.91
 - 0.95
 
-The tested normalized spin durations are approximately:
+The tested spin-before-block durations are:
 
-- 0
-- 0.10
-- 0.25
-- 0.50
-- 1.00
+- 0 us
+- 8 us
+- 16 us
+- 24 us
+- 32 us
+- 48 us
+- 64 us
+- 96 us
 
-The exact \(\tau/S\) values may differ slightly because \(\tau\) is configured in integer microseconds.
+These values concentrate measurement density in the low-latency region
+identified by pilot measurements before the final campaign. The normalized
+value \(\tau/S\) is derived from the calibrated service time and is not used
+to define the grid.
 
-There are 30 configurations in total.
+There are 48 configurations in total.
 
-The experiment uses 10 randomized blocks. Every block contains all 30 configurations in independently randomized order.
+The experiment uses 10 randomized blocks. Every block contains all 48 configurations in independently randomized order.
 
 Each configuration receives 5 measured runs per block, for 50 measured runs per configuration in total.
+
+### Final Grid Revision
+
+Before collection of the final campaign, pilot measurements showed that the
+wait/wake transition of interest occurred below approximately 96 us. The
+earlier coarse normalized grid therefore placed most measurements well above
+the empirically relevant region.
+
+The final campaign was consequently specified with the denser absolute
+0--96 us grid above. This revision was made before collection of the final
+campaign data.
 
 ## 3. Dataset and Calibration
 
