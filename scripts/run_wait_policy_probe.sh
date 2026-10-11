@@ -104,8 +104,9 @@ fi
 
 CALIBRATION_FILE="$(realpath "$CALIBRATION_FILE")"
 
-# Validate and read the existing scheduler-free calibration. Only source that
-# can change the BLS service-time measurement invalidates the artifact.
+# Validate and read the existing scheduler-free calibration. Only changes that
+# can affect the measured BLS execute path invalidate the artifact. Test-only
+# edits and unrelated scheduler dependencies must not force recalibration.
 mapfile -t CALIBRATION_VALUES < <(
     python3 - \
         "$CALIBRATION_FILE" \
@@ -117,6 +118,7 @@ import json
 import math
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 path, current_commit, current_arch, current_cpu = sys.argv[1:]
@@ -162,41 +164,95 @@ if not math.isfinite(s_us) or s_us <= 0:
 provenance = data.get("provenance", {})
 cal_commit = provenance.get("git_commit")
 
-if not cal_commit:
-    errors.append("calibration provenance.git_commit is missing")
-else:
-    relevant_paths = [
-        "Cargo.toml",
-        "Cargo.lock",
-        "harness/Cargo.toml",
-        "harness/src/bin/service_time.rs",
-        "harness/src/workload",
-    ]
+
+def git_show(commit, file_path):
     result = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--name-only",
-            f"{cal_commit}..{current_commit}",
-            "--",
-            *relevant_paths,
-        ],
+        ["git", "show", f"{commit}:{file_path}"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     if result.returncode != 0:
-        errors.append(
-            "could not compare calibration-relevant source: "
-            f"{result.stderr.strip()}"
-        )
-    else:
-        changed = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if changed:
+        raise RuntimeError(result.stderr.strip())
+    return result.stdout
+
+
+def strip_tests(source):
+    # Rust workload tests are not part of the benchmark binary hot path.
+    marker = "\n#[cfg(test)]"
+    return source.split(marker, 1)[0]
+
+
+def lock_package_signature(lock_text, package_names):
+    data = tomllib.loads(lock_text)
+    signatures = []
+    for package in data.get("package", []):
+        if package.get("name") in package_names:
+            signatures.append(
+                (
+                    package.get("name"),
+                    package.get("version"),
+                    package.get("source"),
+                    package.get("checksum"),
+                    tuple(package.get("dependencies", [])),
+                )
+            )
+    return sorted(signatures)
+
+
+if not cal_commit:
+    errors.append("calibration provenance.git_commit is missing")
+else:
+    try:
+        # These files directly define the scheduler-free calibration and the
+        # non-test BLS workload code. Compare them exactly, except for the
+        # #[cfg(test)] section of the workload implementation.
+        exact_paths = [
+            "Cargo.toml",
+            "harness/Cargo.toml",
+            "harness/src/bin/service_time.rs",
+            "harness/src/workload/mod.rs",
+        ]
+        for file_path in exact_paths:
+            old = git_show(cal_commit, file_path)
+            new = git_show(current_commit, file_path)
+            if old != new:
+                errors.append(
+                    f"calibration-relevant source changed since calibration: {file_path}"
+                )
+
+        workload_path = "harness/src/workload/bls_aggregate_verify.rs"
+        old_workload = strip_tests(git_show(cal_commit, workload_path))
+        new_workload = strip_tests(git_show(current_commit, workload_path))
+        if old_workload != new_workload:
             errors.append(
                 "calibration-relevant source changed since calibration: "
-                + ", ".join(changed)
+                f"{workload_path} (non-test code)"
             )
+
+        # Cargo.lock may change because scheduler-only dependencies are added.
+        # Only reject when the BLS verification dependency records themselves
+        # changed. This avoids invalidating S for unrelated Threadance changes.
+        bls_packages = {
+            "solana-bls-signatures",
+            "blst",
+            "blstrs",
+            "ff",
+            "group",
+            "pairing",
+            "subtle",
+            "zeroize",
+        }
+        old_lock = git_show(cal_commit, "Cargo.lock")
+        new_lock = git_show(current_commit, "Cargo.lock")
+        if lock_package_signature(old_lock, bls_packages) != lock_package_signature(
+            new_lock, bls_packages
+        ):
+            errors.append(
+                "BLS dependency versions in Cargo.lock changed since calibration"
+            )
+    except Exception as exc:
+        errors.append(f"could not validate calibration source: {exc}")
 
 if provenance.get("architecture") != current_arch:
     errors.append(
