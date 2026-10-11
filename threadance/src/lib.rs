@@ -141,13 +141,9 @@ impl WakeWaiter<'_> {
             return;
         }
 
-        self.event
-            .sleeping_waiters
-            .fetch_add(1, Ordering::Relaxed);
+        self.event.sleeping_waiters.fetch_add(1, Ordering::Relaxed);
         atomic_wait::wait(&self.event.cookie, self.cookie);
-        self.event
-            .sleeping_waiters
-            .fetch_sub(1, Ordering::Relaxed);
+        self.event.sleeping_waiters.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
