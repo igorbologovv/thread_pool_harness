@@ -50,7 +50,7 @@ where
             let mut perf_captures = Vec::with_capacity(measured_runs.get());
 
             for _ in 0..measured_runs.get() {
-                let (result, capture) = measure_run(STANDARD_PASS, || run_once())
+                let (result, capture) = measure_run(STANDARD_PASS, &mut run_once)
                     .expect("failed to profile standard run");
 
                 results.push(result);
@@ -78,7 +78,7 @@ where
                 run_warmups(warmup_runs, &mut run_once);
 
                 for _ in 0..measured_runs.get() {
-                    let (result, capture) = measure_run(*pass, || run_once())
+                    let (result, capture) = measure_run(*pass, &mut run_once)
                         .unwrap_or_else(|error| panic!("failed deep pass {}: {error}", pass.name,));
 
                     results.push(result);

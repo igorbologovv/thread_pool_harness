@@ -771,13 +771,13 @@ fn operating_system() -> Option<String> {
 }
 
 fn cpu_model() -> Option<String> {
-    if let Some(lscpu) = command_output("lscpu", &[]) {
-        if let Some(model) = lscpu.lines().find_map(|line| {
+    if let Some(lscpu) = command_output("lscpu", &[])
+        && let Some(model) = lscpu.lines().find_map(|line| {
             line.strip_prefix("Model name:")
                 .map(|value| value.trim().to_owned())
-        }) {
-            return Some(model);
-        }
+        })
+    {
+        return Some(model);
     }
 
     let cpuinfo = fs::read_to_string("/proc/cpuinfo").ok()?;

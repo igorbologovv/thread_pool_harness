@@ -545,7 +545,7 @@ mod tests {
             loaded.execute(unit);
         }
 
-        let cache_file = BlsAggregateVerifyWorkload::cache_path(&common, &config, &directory);
+        let cache_file = cache_path(&directory, &common, &config);
 
         assert!(cache_file.exists());
 
