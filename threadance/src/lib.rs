@@ -31,25 +31,23 @@ pub enum WaitStrategy {
     /// Use Crossbeam's native blocking receive path.
     Crossbeam,
 
-    /// Use Threadance's configurable wake channel.
+    /// Stay hot for a fixed duration, then park until work actually arrives.
     ///
-    /// The worker actively polls for exactly the configured duration and then
-    /// registers with the Threadance wake event, rechecks the queue, and parks
-    /// if the queue is still empty. Crossbeam is used only as the bounded job
-    /// queue; its blocking receive path is not used.
+    /// While hot, the worker does nothing except poll the bounded Crossbeam
+    /// queue and issue a CPU spin hint. Once the duration expires, it moves to
+    /// the futex-backed cold path and does not start another spin period until
+    /// it has received and executed a job.
     SpinThenPark(Duration),
 }
 
-/// Snapshot of optional Threadance wake-path instrumentation.
+/// Snapshot of optional Threadance wait-path instrumentation.
 ///
-/// Instrumentation is disabled by default. It is intended for the small
-/// wake-characterization experiment, not for production benchmark runs.
+/// Instrumentation is disabled by default and exists only for the small wake
+/// characterization utility.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WaitStatsSnapshot {
     pub empty_observations: u64,
     pub last_empty_ns: u64,
-    pub parks: u64,
-    pub wake_one_calls: u64,
     pub sleeping_waiters: usize,
 }
 
@@ -58,16 +56,12 @@ struct WaitStats {
     enabled: AtomicBool,
     empty_observations: AtomicU64,
     last_empty_ns: AtomicU64,
-    parks: AtomicU64,
-    wake_one_calls: AtomicU64,
 }
 
 impl WaitStats {
     fn reset(&self) {
         self.empty_observations.store(0, Ordering::Relaxed);
         self.last_empty_ns.store(0, Ordering::Relaxed);
-        self.parks.store(0, Ordering::Relaxed);
-        self.wake_one_calls.store(0, Ordering::Relaxed);
     }
 
     fn record_empty(&self) {
@@ -77,27 +71,15 @@ impl WaitStats {
             self.empty_observations.fetch_add(1, Ordering::Release);
         }
     }
-
-    fn record_park(&self) {
-        if self.enabled.load(Ordering::Relaxed) {
-            self.parks.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn record_wake_one(&self) {
-        if self.enabled.load(Ordering::Relaxed) {
-            self.wake_one_calls.fetch_add(1, Ordering::Relaxed);
-        }
-    }
 }
 
-/// Futex-backed wake event used by the Threadance receive path.
+/// Futex-backed event used only after a worker has left the hot spin path.
 ///
 /// A receiver snapshots `cookie`, registers itself as a waiter, and executes a
 /// second `try_recv()` before sleeping. The paired sequentially-consistent
 /// fences guarantee that either the receiver observes a concurrently enqueued
 /// job on that recheck or the sender observes the registered waiter and wakes
-/// it. This avoids the lost-wakeup window without a contended mutex.
+/// it. This avoids the lost-wakeup window without a mutex.
 #[derive(Default)]
 struct WakeEvent {
     cookie: AtomicU32,
@@ -118,7 +100,6 @@ impl WakeEvent {
     }
 
     fn wake_one(&self) {
-        self.stats.record_wake_one();
         fence(Ordering::SeqCst);
 
         if self.waiters.load(Ordering::Relaxed) != 0 {
@@ -127,6 +108,8 @@ impl WakeEvent {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn wake_all(&self) {
         fence(Ordering::SeqCst);
 
@@ -140,8 +123,6 @@ impl WakeEvent {
         WaitStatsSnapshot {
             empty_observations: self.stats.empty_observations.load(Ordering::Acquire),
             last_empty_ns: self.stats.last_empty_ns.load(Ordering::Relaxed),
-            parks: self.stats.parks.load(Ordering::Relaxed),
-            wake_one_calls: self.stats.wake_one_calls.load(Ordering::Relaxed),
             sleeping_waiters: self.sleeping_waiters.load(Ordering::Relaxed),
         }
     }
@@ -153,12 +134,13 @@ struct WakeWaiter<'a> {
 }
 
 impl WakeWaiter<'_> {
+    #[cold]
+    #[inline(never)]
     fn wait(self) {
         if self.event.cookie.load(Ordering::Relaxed) != self.cookie {
             return;
         }
 
-        self.event.stats.record_park();
         self.event
             .sleeping_waiters
             .fetch_add(1, Ordering::Relaxed);
@@ -177,7 +159,6 @@ impl Drop for WakeWaiter<'_> {
 
 struct Shared {
     wake_event: WakeEvent,
-    num_senders: AtomicUsize,
 }
 
 struct JobSender {
@@ -196,22 +177,10 @@ impl JobSender {
     }
 }
 
-impl Clone for JobSender {
-    fn clone(&self) -> Self {
-        self.shared.num_senders.fetch_add(1, Ordering::Relaxed);
-        Self {
-            inner: self.inner.clone(),
-            shared: Arc::clone(&self.shared),
-        }
-    }
-}
-
 impl Drop for JobSender {
     fn drop(&mut self) {
         drop(self.inner.take());
-        if self.shared.num_senders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.shared.wake_event.wake_all();
-        }
+        self.shared.wake_event.wake_all();
     }
 }
 
@@ -235,35 +204,38 @@ impl JobReceiver {
     }
 
     fn recv_spin_then_park(&self, spin_duration: Duration) -> Result<Job, RecvError> {
+        let deadline = Instant::now()
+            .checked_add(spin_duration)
+            .expect("worker spin duration is too large");
+        let mut recorded_empty = false;
+
         loop {
-            let deadline = Instant::now()
-                .checked_add(spin_duration)
-                .expect("worker spin duration is too large");
-            let mut recorded_empty = false;
-
-            loop {
-                match self.inner.try_recv() {
-                    Ok(job) => return Ok(job),
-                    Err(TryRecvError::Disconnected) => return Err(RecvError),
-                    Err(TryRecvError::Empty) => {
-                        if !recorded_empty {
-                            self.shared.wake_event.stats.record_empty();
-                            recorded_empty = true;
-                        }
-
-                        if spin_duration.is_zero() || Instant::now() >= deadline {
-                            break;
-                        }
-
-                        std::hint::spin_loop();
+            match self.inner.try_recv() {
+                Ok(job) => return Ok(job),
+                Err(TryRecvError::Disconnected) => return Err(RecvError),
+                Err(TryRecvError::Empty) => {
+                    if !recorded_empty {
+                        self.shared.wake_event.stats.record_empty();
+                        recorded_empty = true;
                     }
+
+                    if spin_duration.is_zero() || Instant::now() >= deadline {
+                        return self.recv_parked();
+                    }
+
+                    std::hint::spin_loop();
                 }
             }
+        }
+    }
 
-            // Register before the second queue check. The paired fences in
-            // register_waiter() and wake_*() guarantee that either this recheck
-            // observes a concurrent send or that sender observes the waiter and
-            // performs the futex wake.
+    /// Cold path: once a worker gives up spinning, keep it cold until it
+    /// actually acquires a job. Spurious or stolen wakes re-park immediately
+    /// instead of starting a fresh spin interval.
+    #[cold]
+    #[inline(never)]
+    fn recv_parked(&self) -> Result<Job, RecvError> {
+        loop {
             let waiter = self.shared.wake_event.register_waiter();
             match self.inner.try_recv() {
                 Ok(job) => return Ok(job),
@@ -278,7 +250,6 @@ fn job_channel(capacity: usize) -> (JobSender, JobReceiver) {
     let (sender, receiver) = bounded(capacity);
     let shared = Arc::new(Shared {
         wake_event: WakeEvent::default(),
-        num_senders: AtomicUsize::new(1),
     });
 
     (
@@ -348,7 +319,7 @@ impl ThreadPool {
         })
     }
 
-    /// Enables or disables lightweight wake-path instrumentation.
+    /// Enables or disables lightweight wait-path instrumentation.
     pub fn set_wait_instrumentation(&self, enabled: bool) {
         self.shared
             .wake_event
@@ -398,9 +369,8 @@ fn receive_job(receiver: &JobReceiver, wait_strategy: WaitStrategy) -> Option<Jo
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        // Disconnect the job channel first. The custom sender wakes all parked
-        // workers when the final sender is dropped, so they can observe the
-        // disconnected queue and exit before we join them.
+        // Disconnect the job channel first, then wake every parked worker so
+        // each receiver can observe the disconnected queue before we join it.
         drop(self.job_sender.take());
 
         for handle in self.worker_handles.drain(..) {
