@@ -136,6 +136,7 @@ import json
 import math
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 (
@@ -209,52 +210,268 @@ cal_commit = provenance.get("git_commit")
 if not cal_commit:
     errors.append("calibration provenance.git_commit is missing")
 else:
-    # Calibration validity depends only on source that can change the
-    # scheduler-free BLS service-time measurement.
+    # Calibration compatibility is determined by code and dependencies that
+    # can actually change the scheduler-free BLS service-time measurement.
     #
-    # Documentation, analysis scripts, sweep orchestration and unrelated
-    # scheduler code do not invalidate S.
-    calibration_relevant_paths = [
-        "Cargo.toml",
-        "Cargo.lock",
-        "harness/Cargo.toml",
-        "harness/src/bin/service_time.rs",
-        "harness/src/workload",
-    ]
+    # Do NOT invalidate S merely because documentation, scheduler code,
+    # tests, sweep orchestration, or unrelated Cargo.lock packages changed.
 
-    result = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--name-only",
-            f"{cal_commit}..{current_commit}",
-            "--",
-            *calibration_relevant_paths,
-        ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    if result.returncode != 0:
-        errors.append(
-            "could not compare calibration-relevant source between "
-            f"{cal_commit!r} and {current_commit!r}: "
-            f"{result.stderr.strip()}"
+    def git_show(commit, file_path):
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{file_path}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    else:
-        changed = [
-            line.strip()
-            for line in result.stdout.splitlines()
-            if line.strip()
-        ]
 
-        if changed:
-            errors.append(
-                "calibration-relevant source changed since calibration "
-                f"commit {cal_commit}: "
-                + ", ".join(changed)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git show {commit}:{file_path} failed: "
+                f"{result.stderr.strip()}"
             )
+
+        return result.stdout
+
+
+    def strip_test_module(source):
+        # Unit tests do not participate in the service-time measurement.
+        marker = "\n#[cfg(test)]"
+
+        if marker in source:
+            return source.split(marker, 1)[0]
+
+        return source
+
+
+    def dependency_spec(commit, package_name):
+        manifest = tomllib.loads(
+            git_show(commit, "harness/Cargo.toml")
+        )
+
+        dependencies = manifest.get("dependencies", {})
+
+        if package_name not in dependencies:
+            raise RuntimeError(
+                f"{package_name!r} is missing from "
+                "harness/Cargo.toml"
+            )
+
+        return dependencies[package_name]
+
+
+    def lock_dependency_closure(lock_text, root_name):
+        lock = tomllib.loads(lock_text)
+        packages = lock.get("package", [])
+
+        by_name = {}
+
+        for package in packages:
+            by_name.setdefault(package["name"], []).append(package)
+
+        roots = by_name.get(root_name, [])
+
+        if len(roots) != 1:
+            raise RuntimeError(
+                f"expected exactly one {root_name!r} package in "
+                f"Cargo.lock, found {len(roots)}"
+            )
+
+        def key(package):
+            return (
+                package["name"],
+                package["version"],
+                package.get("source", ""),
+            )
+
+        def resolve_dependency(spec):
+            parts = spec.split()
+
+            if not parts:
+                raise RuntimeError(
+                    f"invalid Cargo.lock dependency entry: {spec!r}"
+                )
+
+            name = parts[0]
+            version = None
+
+            # Cargo.lock includes the version when the name alone would be
+            # ambiguous because several versions of a crate are present.
+            if len(parts) >= 2:
+                candidate = parts[1]
+
+                if candidate and candidate[0].isdigit():
+                    version = candidate
+
+            candidates = by_name.get(name, [])
+
+            if version is not None:
+                candidates = [
+                    package
+                    for package in candidates
+                    if package["version"] == version
+                ]
+
+            if len(candidates) != 1:
+                raise RuntimeError(
+                    "could not uniquely resolve dependency "
+                    f"{spec!r}: found {len(candidates)} candidates"
+                )
+
+            return candidates[0]
+
+        closure = {}
+        pending = [roots[0]]
+
+        while pending:
+            package = pending.pop()
+            package_key = key(package)
+
+            if package_key in closure:
+                continue
+
+            dependencies = tuple(
+                sorted(package.get("dependencies", []))
+            )
+
+            closure[package_key] = (
+                package.get("checksum"),
+                dependencies,
+            )
+
+            for dependency in dependencies:
+                pending.append(resolve_dependency(dependency))
+
+        return closure
+
+
+    try:
+        # The calibration binary defines exactly what is timed.
+        service_time_path = "harness/src/bin/service_time.rs"
+
+        old_service_time = git_show(
+            cal_commit,
+            service_time_path,
+        )
+        new_service_time = git_show(
+            current_commit,
+            service_time_path,
+        )
+
+        if old_service_time != new_service_time:
+            errors.append(
+                "calibration measurement code changed since "
+                f"calibration: {service_time_path}"
+            )
+
+        # Compare workload production code, but deliberately ignore the
+        # #[cfg(test)] module. Test-only edits cannot change measured S.
+        workload_path = (
+            "harness/src/workload/bls_aggregate_verify.rs"
+        )
+
+        old_workload = strip_test_module(
+            git_show(cal_commit, workload_path)
+        )
+        new_workload = strip_test_module(
+            git_show(current_commit, workload_path)
+        )
+
+        if old_workload != new_workload:
+            errors.append(
+                "BLS workload production code changed since "
+                f"calibration: {workload_path}"
+            )
+
+        # Feature/version specification of the actual BLS crate matters.
+        dependency_name = "solana-bls-signatures"
+
+        old_dependency_spec = dependency_spec(
+            cal_commit,
+            dependency_name,
+        )
+        new_dependency_spec = dependency_spec(
+            current_commit,
+            dependency_name,
+        )
+
+        if old_dependency_spec != new_dependency_spec:
+            errors.append(
+                f"{dependency_name} dependency specification changed "
+                "since calibration"
+            )
+
+        # Cargo.lock can change for completely unrelated scheduler crates.
+        # Compare only the resolved transitive dependency closure rooted at
+        # solana-bls-signatures.
+        old_bls_closure = lock_dependency_closure(
+            git_show(cal_commit, "Cargo.lock"),
+            dependency_name,
+        )
+
+        new_bls_closure = lock_dependency_closure(
+            git_show(current_commit, "Cargo.lock"),
+            dependency_name,
+        )
+
+        if old_bls_closure != new_bls_closure:
+            old_keys = set(old_bls_closure)
+            new_keys = set(new_bls_closure)
+
+            added = sorted(new_keys - old_keys)
+            removed = sorted(old_keys - new_keys)
+
+            changed = sorted(
+                package
+                for package in old_keys & new_keys
+                if old_bls_closure[package]
+                != new_bls_closure[package]
+            )
+
+            details = []
+
+            if added:
+                details.append(
+                    "added="
+                    + ", ".join(
+                        f"{name}-{version}"
+                        for name, version, _ in added
+                    )
+                )
+
+            if removed:
+                details.append(
+                    "removed="
+                    + ", ".join(
+                        f"{name}-{version}"
+                        for name, version, _ in removed
+                    )
+                )
+
+            if changed:
+                details.append(
+                    "changed="
+                    + ", ".join(
+                        f"{name}-{version}"
+                        for name, version, _ in changed
+                    )
+                )
+
+            suffix = (
+                ": " + "; ".join(details)
+                if details
+                else ""
+            )
+
+            errors.append(
+                "resolved BLS dependency closure changed since "
+                f"calibration{suffix}"
+            )
+
+    except Exception as exc:
+        errors.append(
+            "could not validate calibration source compatibility: "
+            f"{exc}"
+        )
 
 cal_arch = provenance.get("architecture")
 
