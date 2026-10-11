@@ -37,7 +37,7 @@ pub struct Cli {
 
     /// Time a Threadance worker actively polls an empty queue before blocking.
     ///
-    /// Zero means immediate blocking.
+    /// Zero means immediate blocking. Ignored by `agave-waker`.
     #[arg(long, default_value_t = 0)]
     pub threadance_spin_us: u64,
 
@@ -195,6 +195,7 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
+    AgaveWaker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

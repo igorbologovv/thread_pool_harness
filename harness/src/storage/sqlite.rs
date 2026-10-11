@@ -150,7 +150,7 @@ impl BenchmarkDb {
         let measured_runs = usize_to_i64(cli.runs.get(), "measured_runs")?;
 
         let queue_capacity = match cli.scheduler {
-            SchedulerKind::Threadance => {
+            SchedulerKind::Threadance | SchedulerKind::AgaveWaker => {
                 Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?)
             }
             SchedulerKind::Rayon | SchedulerKind::Bevy => None,
@@ -160,7 +160,7 @@ impl BenchmarkDb {
             SchedulerKind::Threadance => {
                 Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?)
             }
-            SchedulerKind::Rayon | SchedulerKind::Bevy => None,
+            SchedulerKind::Rayon | SchedulerKind::Bevy | SchedulerKind::AgaveWaker => None,
         };
 
         let delivery_mode = cli.delivery_mode();
@@ -678,6 +678,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
         SchedulerKind::Rayon => "rayon",
         SchedulerKind::Bevy => "bevy",
         SchedulerKind::Threadance => "threadance",
+        SchedulerKind::AgaveWaker => "agave-waker",
     }
 }
 

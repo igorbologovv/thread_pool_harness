@@ -124,4 +124,15 @@ mod tests {
 
         verify(&scheduler);
     }
+
+    #[test]
+    fn agave_waker_executes_every_work_unit_exactly_once() {
+        let scheduler = ThreadanceScheduler::new_agave(
+            NonZeroUsize::new(WORKERS).unwrap(),
+            NonZeroUsize::new(WORK_UNITS).unwrap(),
+        )
+        .unwrap();
+
+        verify(&scheduler);
+    }
 }

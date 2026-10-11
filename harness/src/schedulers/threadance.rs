@@ -24,6 +24,16 @@ impl ThreadanceScheduler {
 
         Ok(Self { pool })
     }
+
+    pub fn new_agave(
+        workers: NonZeroUsize,
+        queue_capacity: NonZeroUsize,
+    ) -> io::Result<Self> {
+        let pool =
+            ThreadPool::with_wait_strategy(workers, queue_capacity, WaitStrategy::AgaveBackoff)?;
+
+        Ok(Self { pool })
+    }
 }
 
 impl Scheduler for ThreadanceScheduler {

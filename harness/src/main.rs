@@ -141,6 +141,13 @@ where
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }
+
+        SchedulerKind::AgaveWaker => {
+            let scheduler = ThreadanceScheduler::new_agave(cli.workers, cli.queue_capacity)
+                .expect("failed to create Threadance pool with Agave waker");
+
+            run_benchmark(cli, &scheduler, workload, delivery)
+        }
     }
 }
 

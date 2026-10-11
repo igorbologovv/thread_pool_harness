@@ -15,6 +15,10 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 static MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
+// crossbeam_utils::Backoff 0.8.23 constants used by Agave wake-channel.
+const AGAVE_BACKOFF_SPIN_LIMIT: u32 = 6;
+const AGAVE_BACKOFF_YIELD_LIMIT: u32 = 10;
+
 /// Monotonic timestamp used by the wake-characterization utility.
 pub fn monotonic_now_ns() -> u64 {
     MONOTONIC_ORIGIN
@@ -38,6 +42,9 @@ pub enum WaitStrategy {
     /// the futex-backed cold path and does not start another spin period until
     /// it has received and executed a job.
     SpinThenPark(Duration),
+
+    /// Use the fixed iteration-based backoff policy from Agave wake-channel.
+    AgaveBackoff,
 }
 
 /// Snapshot of optional Threadance wait-path instrumentation.
@@ -225,6 +232,44 @@ impl JobReceiver {
         }
     }
 
+    /// Mirrors Agave wake-channel's receive policy. Agave uses
+    /// `crossbeam_utils::Backoff` 0.8.23: steps 0..=6 issue exponentially
+    /// increasing spin hints, steps 7..=10 call `yield_now()`, and the next
+    /// empty observation moves to the futex-backed waiter protocol.
+    fn recv_agave_backoff(&self) -> Result<Job, RecvError> {
+        loop {
+            let mut step = 0u32;
+
+            loop {
+                match self.inner.try_recv() {
+                    Ok(job) => return Ok(job),
+                    Err(TryRecvError::Disconnected) => return Err(RecvError),
+                    Err(TryRecvError::Empty) if step > AGAVE_BACKOFF_YIELD_LIMIT => break,
+                    Err(TryRecvError::Empty) => {
+                        if step <= AGAVE_BACKOFF_SPIN_LIMIT {
+                            for _ in 0..(1u32 << step) {
+                                std::hint::spin_loop();
+                            }
+                        } else {
+                            std::thread::yield_now();
+                        }
+
+                        if step <= AGAVE_BACKOFF_YIELD_LIMIT {
+                            step += 1;
+                        }
+                    }
+                }
+            }
+
+            let waiter = self.shared.wake_event.register_waiter();
+            match self.inner.try_recv() {
+                Ok(job) => return Ok(job),
+                Err(TryRecvError::Disconnected) => return Err(RecvError),
+                Err(TryRecvError::Empty) => waiter.wait(),
+            }
+        }
+    }
+
     /// Cold path: once a worker gives up spinning, keep it cold until it
     /// actually acquires a job. Spurious or stolen wakes re-park immediately
     /// instead of starting a fresh spin interval.
@@ -360,6 +405,7 @@ fn receive_job(receiver: &JobReceiver, wait_strategy: WaitStrategy) -> Option<Jo
         WaitStrategy::SpinThenPark(spin_duration) => {
             receiver.recv_spin_then_park(spin_duration).ok()
         }
+        WaitStrategy::AgaveBackoff => receiver.recv_agave_backoff().ok(),
     }
 }
 
@@ -436,6 +482,11 @@ mod tests {
     #[test]
     fn spin_then_park_executes_submitted_jobs() {
         assert_executes(WaitStrategy::SpinThenPark(Duration::from_micros(50)));
+    }
+
+    #[test]
+    fn agave_backoff_executes_submitted_jobs() {
+        assert_executes(WaitStrategy::AgaveBackoff);
     }
 
     #[test]
