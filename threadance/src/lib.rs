@@ -2,8 +2,8 @@ use std::{
     fmt, io,
     num::NonZeroUsize,
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
     },
     thread::{Builder, JoinHandle},
     time::{Duration, Instant},
@@ -91,17 +91,16 @@ impl WaitStats {
     }
 }
 
-/// Wake event used by the Threadance receive path.
+/// Futex-backed wake event used by the Threadance receive path.
 ///
-/// `generation` changes whenever a sender publishes a wake. A waiter records
-/// the current generation, the receiver rechecks the queue, and only then
-/// waits for the generation to change. The mutex/condvar pair makes the
-/// transition into sleep atomic with respect to a sender notification, so a
-/// job cannot be stranded by a lost wakeup.
+/// A receiver snapshots `cookie`, registers itself as a waiter, and executes a
+/// second `try_recv()` before sleeping. The paired sequentially-consistent
+/// fences guarantee that either the receiver observes a concurrently enqueued
+/// job on that recheck or the sender observes the registered waiter and wakes
+/// it. This avoids the lost-wakeup window without a contended mutex.
 #[derive(Default)]
 struct WakeEvent {
-    generation: Mutex<u64>,
-    condvar: Condvar,
+    cookie: AtomicU32,
     waiters: AtomicUsize,
     sleeping_waiters: AtomicUsize,
     stats: WaitStats,
@@ -109,30 +108,32 @@ struct WakeEvent {
 
 impl WakeEvent {
     fn register_waiter(&self) -> WakeWaiter<'_> {
-        let generation = *self.generation.lock().unwrap();
+        let cookie = self.cookie.load(Ordering::Relaxed);
         self.waiters.fetch_add(1, Ordering::Relaxed);
+        fence(Ordering::SeqCst);
         WakeWaiter {
             event: self,
-            generation,
+            cookie,
         }
     }
 
     fn wake_one(&self) {
         self.stats.record_wake_one();
+        fence(Ordering::SeqCst);
 
-        if self.waiters.load(Ordering::Relaxed) == 0 {
-            return;
+        if self.waiters.load(Ordering::Relaxed) != 0 {
+            self.cookie.fetch_add(1, Ordering::Relaxed);
+            atomic_wait::wake_one(&self.cookie);
         }
-
-        let mut generation = self.generation.lock().unwrap();
-        *generation = generation.wrapping_add(1);
-        self.condvar.notify_one();
     }
 
     fn wake_all(&self) {
-        let mut generation = self.generation.lock().unwrap();
-        *generation = generation.wrapping_add(1);
-        self.condvar.notify_all();
+        fence(Ordering::SeqCst);
+
+        if self.waiters.load(Ordering::Relaxed) != 0 {
+            self.cookie.fetch_add(1, Ordering::Relaxed);
+            atomic_wait::wake_all(&self.cookie);
+        }
     }
 
     fn snapshot(&self) -> WaitStatsSnapshot {
@@ -148,19 +149,23 @@ impl WakeEvent {
 
 struct WakeWaiter<'a> {
     event: &'a WakeEvent,
-    generation: u64,
+    cookie: u32,
 }
 
 impl WakeWaiter<'_> {
     fn wait(self) {
-        self.event.stats.record_park();
-
-        let mut generation = self.event.generation.lock().unwrap();
-        while *generation == self.generation {
-            self.event.sleeping_waiters.fetch_add(1, Ordering::Relaxed);
-            generation = self.event.condvar.wait(generation).unwrap();
-            self.event.sleeping_waiters.fetch_sub(1, Ordering::Relaxed);
+        if self.event.cookie.load(Ordering::Relaxed) != self.cookie {
+            return;
         }
+
+        self.event.stats.record_park();
+        self.event
+            .sleeping_waiters
+            .fetch_add(1, Ordering::Relaxed);
+        atomic_wait::wait(&self.event.cookie, self.cookie);
+        self.event
+            .sleeping_waiters
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -255,11 +260,10 @@ impl JobReceiver {
                 }
             }
 
-            // A sender may publish a job after the last Empty above but before
-            // we register as a waiter. Register first, then recheck the queue.
-            // If the job arrived in that race window, this second try_recv()
-            // observes it. Otherwise the sender observes a registered waiter
-            // and wakes us after publishing the job.
+            // Register before the second queue check. The paired fences in
+            // register_waiter() and wake_*() guarantee that either this recheck
+            // observes a concurrent send or that sender observes the waiter and
+            // performs the futex wake.
             let waiter = self.shared.wake_event.register_waiter();
             match self.inner.try_recv() {
                 Ok(job) => return Ok(job),
@@ -432,7 +436,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{ThreadPool, WaitStrategy};
+    use super::{ThreadPool, WaitStrategy, WakeEvent};
 
     fn assert_executes(wait_strategy: WaitStrategy) {
         let pool = ThreadPool::with_wait_strategy(
@@ -471,6 +475,14 @@ mod tests {
     #[test]
     fn immediate_park_executes_submitted_jobs() {
         assert_executes(WaitStrategy::SpinThenPark(Duration::ZERO));
+    }
+
+    #[test]
+    fn wake_before_wait_does_not_block() {
+        let event = WakeEvent::default();
+        let waiter = event.register_waiter();
+        event.wake_one();
+        waiter.wait();
     }
 
     #[test]
