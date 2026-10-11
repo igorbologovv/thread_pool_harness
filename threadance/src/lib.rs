@@ -2,7 +2,7 @@ use std::{
     fmt, io,
     num::NonZeroUsize,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::{Builder, JoinHandle},
@@ -12,6 +12,18 @@ use std::{
 use crossbeam_channel::{RecvError, SendError, TryRecvError, bounded};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
+
+static MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+/// Monotonic timestamp used by the wake-characterization utility.
+pub fn monotonic_now_ns() -> u64 {
+    MONOTONIC_ORIGIN
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
 
 /// Strategy used by idle workers while waiting for more work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +57,7 @@ pub enum WaitStrategy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WaitStatsSnapshot {
     pub empty_observations: u64,
+    pub last_empty_ns: u64,
     pub parks: u64,
     pub wake_one_calls: u64,
     pub sleeping_waiters: usize,
@@ -54,6 +67,7 @@ pub struct WaitStatsSnapshot {
 struct WaitStats {
     enabled: AtomicBool,
     empty_observations: AtomicU64,
+    last_empty_ns: AtomicU64,
     parks: AtomicU64,
     wake_one_calls: AtomicU64,
 }
@@ -61,13 +75,16 @@ struct WaitStats {
 impl WaitStats {
     fn reset(&self) {
         self.empty_observations.store(0, Ordering::Relaxed);
+        self.last_empty_ns.store(0, Ordering::Relaxed);
         self.parks.store(0, Ordering::Relaxed);
         self.wake_one_calls.store(0, Ordering::Relaxed);
     }
 
     fn record_empty(&self) {
         if self.enabled.load(Ordering::Relaxed) {
-            self.empty_observations.fetch_add(1, Ordering::Relaxed);
+            let now_ns = monotonic_now_ns();
+            self.last_empty_ns.store(now_ns, Ordering::Relaxed);
+            self.empty_observations.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -130,7 +147,8 @@ impl WakeEvent {
 
     fn snapshot(&self) -> WaitStatsSnapshot {
         WaitStatsSnapshot {
-            empty_observations: self.stats.empty_observations.load(Ordering::Relaxed),
+            empty_observations: self.stats.empty_observations.load(Ordering::Acquire),
+            last_empty_ns: self.stats.last_empty_ns.load(Ordering::Relaxed),
             parks: self.stats.parks.load(Ordering::Relaxed),
             wake_one_calls: self.stats.wake_one_calls.load(Ordering::Relaxed),
             sleeping_waiters: self.sleeping_waiters.load(Ordering::Relaxed),
