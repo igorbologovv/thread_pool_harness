@@ -15,7 +15,7 @@ set -euo pipefail
 #
 # Fixed:
 #   workload = BLS aggregate verify
-#   S        = 1547 us/work unit (previous calibration)
+#   S        = measured by required service-time calibration
 #   W        = 8 workers
 #   CV       = 0 (deterministic periodic arrivals)
 # ============================================================
@@ -421,13 +421,14 @@ fi
 # frequency drift is not systematically aligned with rho or tau.
 # ------------------------------------------------------------
 
-python3 - "$PLAN" <<'PY'
+python3 - "$PLAN" "$S_US" "$BLOCKS" "$WORKERS" <<'PY'
 import csv
 import random
 import sys
 
-S_US = 1547.0
-W = 8
+S_US = float(sys.argv[2])
+BLOCKS = int(sys.argv[3])
+W = int(sys.argv[4])
 
 rhos = [
     0.25,
@@ -477,7 +478,6 @@ for rho in rhos:
             "prediction": prediction,
         })
 
-BLOCKS = 10
 RANDOMIZATION_SEED = 20261007
 
 with open(sys.argv[1], "w", newline="") as f:

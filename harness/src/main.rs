@@ -83,9 +83,10 @@ fn main() {
                 certificates_per_work_unit: cli.certificates_per_work_unit.get(),
             };
 
-            let workload = Arc::new(BlsAggregateVerifyWorkload::generate(
+            let workload = Arc::new(BlsAggregateVerifyWorkload::load_or_generate_cached(
                 &common_config,
                 &workload_config,
+                &cli.dataset_cache_dir,
             ));
 
             run_selected_scheduler(&cli, &workload, &delivery)

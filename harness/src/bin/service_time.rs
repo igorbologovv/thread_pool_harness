@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[path = "../workload/mod.rs"]
 mod workload;
 
@@ -42,6 +43,10 @@ struct Cli {
     /// Optional CSV file receiving every measured calibration run.
     #[arg(long)]
     samples_csv: Option<PathBuf>,
+
+    /// Directory containing reusable workload datasets.
+    #[arg(long, default_value = "results/datasets")]
+    dataset_cache_dir: PathBuf,
 }
 
 fn run_once<W: Workload>(workload: &W) -> Duration {
@@ -71,8 +76,13 @@ fn main() {
         certificates_per_work_unit: cli.certificates_per_work_unit,
     };
 
-    // Dataset generation is intentionally outside the measured interval.
-    let workload = BlsAggregateVerifyWorkload::generate(&common, &config);
+    // Dataset loading/generation is intentionally outside the measured
+    // interval. A cache hit reuses exactly the same dataset bytes.
+    let workload = BlsAggregateVerifyWorkload::load_or_generate_cached(
+        &common,
+        &config,
+        &cli.dataset_cache_dir,
+    );
 
     for _ in 0..cli.warmup {
         run_once(&workload);

@@ -21,3 +21,6 @@
 
 # Generated calibration artifacts
 results/calibrations/
+
+# Generated workload dataset cache
+/results/datasets/

@@ -104,6 +104,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
 
+    /// Directory containing reusable workload datasets.
+    ///
+    /// BLS datasets are generated once on a cache miss and loaded on
+    /// subsequent benchmark invocations. Cache generation/loading is
+    /// outside the measured interval.
+    #[arg(long, default_value = "results/datasets")]
+    pub dataset_cache_dir: PathBuf,
+
     /// Number of warm-up runs discarded before measurement.
     #[arg(long, default_value_t = 5)]
     pub warmup: usize,
