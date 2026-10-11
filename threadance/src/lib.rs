@@ -29,19 +29,9 @@ pub fn monotonic_now_ns() -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitStrategy {
     /// Use Crossbeam's native blocking receive path.
-    ///
-    /// This preserves the original Threadance behaviour and is useful as a
-    /// baseline when comparing wake implementations.
-    Block,
+    Crossbeam,
 
-    /// Legacy strategy used by the first fixed-wait experiments.
-    ///
-    /// The worker actively polls for the configured duration and then falls
-    /// back to Crossbeam's native blocking `recv()`. This intentionally keeps
-    /// the old semantics so existing experiment results remain reproducible.
-    SpinThenBlock(Duration),
-
-    /// Use Threadance's wake channel.
+    /// Use Threadance's configurable wake channel.
     ///
     /// The worker actively polls for exactly the configured duration and then
     /// registers with the Threadance wake event, rechecks the queue, and parks
@@ -167,9 +157,6 @@ impl WakeWaiter<'_> {
 
         let mut generation = self.event.generation.lock().unwrap();
         while *generation == self.generation {
-            // Increment while holding the same mutex used by wake_one(). Once
-            // Condvar::wait releases the mutex, a sender can acquire it and
-            // notify us without a lost-wakeup window.
             self.event.sleeping_waiters.fetch_add(1, Ordering::Relaxed);
             generation = self.event.condvar.wait(generation).unwrap();
             self.event.sleeping_waiters.fetch_sub(1, Ordering::Relaxed);
@@ -242,29 +229,6 @@ impl JobReceiver {
         self.inner.recv()
     }
 
-    fn recv_spin_then_block(&self, spin_duration: Duration) -> Result<Job, RecvError> {
-        if spin_duration.is_zero() {
-            return self.inner.recv();
-        }
-
-        let deadline = Instant::now()
-            .checked_add(spin_duration)
-            .expect("worker spin duration is too large");
-
-        loop {
-            match self.inner.try_recv() {
-                Ok(job) => return Ok(job),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => {
-                    if Instant::now() >= deadline {
-                        return self.inner.recv();
-                    }
-                    std::hint::spin_loop();
-                }
-            }
-        }
-    }
-
     fn recv_spin_then_park(&self, spin_duration: Duration) -> Result<Job, RecvError> {
         loop {
             let deadline = Instant::now()
@@ -327,8 +291,6 @@ fn job_channel(capacity: usize) -> (JobSender, JobReceiver) {
 
 /// Fixed-size thread pool backed by a bounded shared work queue.
 pub struct ThreadPool {
-    // The sender is optional so Drop can disconnect the channel before
-    // joining worker threads.
     job_sender: Option<JobSender>,
     shared: Arc<Shared>,
     worker_handles: Vec<JoinHandle<()>>,
@@ -338,7 +300,7 @@ impl ThreadPool {
     /// Creates a thread pool whose workers use Crossbeam's native blocking
     /// receive path when the queue is empty.
     pub fn new(num_workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> io::Result<Self> {
-        Self::with_wait_strategy(num_workers, queue_capacity, WaitStrategy::Block)
+        Self::with_wait_strategy(num_workers, queue_capacity, WaitStrategy::Crossbeam)
     }
 
     /// Creates a thread pool with an explicitly configured worker wait
@@ -383,10 +345,6 @@ impl ThreadPool {
     }
 
     /// Enables or disables lightweight wake-path instrumentation.
-    ///
-    /// Leave this disabled for normal benchmark runs. The characterization
-    /// utility enables it to observe when workers first see an empty queue and
-    /// when they actually enter the sleep path.
     pub fn set_wait_instrumentation(&self, enabled: bool) {
         self.shared
             .wake_event
@@ -427,10 +385,7 @@ fn worker_loop(receiver: JobReceiver, wait_strategy: WaitStrategy) {
 
 fn receive_job(receiver: &JobReceiver, wait_strategy: WaitStrategy) -> Option<Job> {
     match wait_strategy {
-        WaitStrategy::Block => receiver.recv_crossbeam().ok(),
-        WaitStrategy::SpinThenBlock(spin_duration) => {
-            receiver.recv_spin_then_block(spin_duration).ok()
-        }
+        WaitStrategy::Crossbeam => receiver.recv_crossbeam().ok(),
         WaitStrategy::SpinThenPark(spin_duration) => {
             receiver.recv_spin_then_park(spin_duration).ok()
         }
@@ -504,13 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn executes_submitted_jobs_with_crossbeam_blocking() {
-        assert_executes(WaitStrategy::Block);
-    }
-
-    #[test]
-    fn legacy_spin_then_block_executes_submitted_jobs() {
-        assert_executes(WaitStrategy::SpinThenBlock(Duration::from_micros(50)));
+    fn executes_submitted_jobs_with_crossbeam_waker() {
+        assert_executes(WaitStrategy::Crossbeam);
     }
 
     #[test]
