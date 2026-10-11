@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use threadance::{ThreadPool, WaitStrategy};
+use threadance::{ThreadPool, WaitStrategy, monotonic_now_ns};
 
 const DEFAULT_GAPS_US: &[u64] = &[5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 100];
 const DEFAULT_ITERATIONS: usize = 200;
@@ -38,15 +38,17 @@ fn main() {
     eprintln!();
 
     println!(
-        "spin_us,gap_us,iterations,slept_count,slept_pct,mean_start_latency_us,median_start_latency_us,p95_start_latency_us"
+        "spin_us,gap_us,iterations,slept_count,slept_pct,mean_delivery_late_us,p95_delivery_late_us,mean_start_latency_us,median_start_latency_us,p95_start_latency_us"
     );
 
     for gap_us in gaps {
         let result = characterize(spin_us, gap_us, iterations);
         println!(
-            "{spin_us},{gap_us},{iterations},{},{:.3},{:.3},{:.3},{:.3}",
+            "{spin_us},{gap_us},{iterations},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             result.slept_count,
             100.0 * result.slept_count as f64 / iterations as f64,
+            result.mean_delivery_late_us,
+            result.p95_delivery_late_us,
             result.mean_latency_us,
             result.median_latency_us,
             result.p95_latency_us,
@@ -56,6 +58,8 @@ fn main() {
 
 struct ResultRow {
     slept_count: usize,
+    mean_delivery_late_us: f64,
+    p95_delivery_late_us: f64,
     mean_latency_us: f64,
     median_latency_us: f64,
     p95_latency_us: f64,
@@ -80,17 +84,23 @@ fn characterize(spin_us: u64, gap_us: u64, iterations: usize) -> ResultRow {
     pool.execute(move || warmup_tx.send(()).unwrap()).unwrap();
     warmup_rx.recv().unwrap();
 
-    wait_for_next_empty(&pool, 0);
-
+    let mut empty = wait_for_next_empty(&pool, 0);
     let mut slept_count = 0usize;
+    let mut delivery_late_ns = Vec::with_capacity(iterations);
     let mut latencies_ns = Vec::with_capacity(iterations);
-    let mut last_empty = pool.wait_stats().empty_observations;
 
     for _ in 0..iterations {
-        // The worker has just observed an empty queue. Delay the producer by
-        // the requested gap, then sample whether the worker is actually asleep
-        // immediately before the next job is published.
-        busy_wait(Duration::from_micros(gap_us));
+        // The worker timestamps the first Empty it observes. Pace relative to
+        // that timestamp, not relative to when this producer thread notices
+        // the observation, otherwise producer scheduling delay would inflate
+        // the requested microsecond gap.
+        let target_ns = empty
+            .timestamp_ns
+            .saturating_add(gap_us.saturating_mul(1_000));
+        busy_wait_until(target_ns);
+
+        let now_ns = monotonic_now_ns();
+        delivery_late_ns.push(now_ns.saturating_sub(target_ns));
 
         if pool.wait_stats().sleeping_waiters != 0 {
             slept_count += 1;
@@ -105,27 +115,40 @@ fn characterize(spin_us: u64, gap_us: u64, iterations: usize) -> ResultRow {
         .unwrap();
 
         latencies_ns.push(done_rx.recv().unwrap().as_nanos() as u64);
-
-        wait_for_next_empty(&pool, last_empty);
-        last_empty = pool.wait_stats().empty_observations;
+        empty = wait_for_next_empty(&pool, empty.observation);
     }
 
+    delivery_late_ns.sort_unstable();
     latencies_ns.sort_unstable();
-    let mean_ns = latencies_ns.iter().copied().sum::<u64>() as f64 / latencies_ns.len() as f64;
-    let median_ns = percentile(&latencies_ns, 0.50) as f64;
-    let p95_ns = percentile(&latencies_ns, 0.95) as f64;
 
     ResultRow {
         slept_count,
-        mean_latency_us: mean_ns / 1_000.0,
-        median_latency_us: median_ns / 1_000.0,
-        p95_latency_us: p95_ns / 1_000.0,
+        mean_delivery_late_us: mean(&delivery_late_ns) / 1_000.0,
+        p95_delivery_late_us: percentile(&delivery_late_ns, 0.95) as f64 / 1_000.0,
+        mean_latency_us: mean(&latencies_ns) / 1_000.0,
+        median_latency_us: percentile(&latencies_ns, 0.50) as f64 / 1_000.0,
+        p95_latency_us: percentile(&latencies_ns, 0.95) as f64 / 1_000.0,
     }
 }
 
-fn wait_for_next_empty(pool: &ThreadPool, previous: u64) {
+#[derive(Clone, Copy)]
+struct EmptyObservation {
+    observation: u64,
+    timestamp_ns: u64,
+}
+
+fn wait_for_next_empty(pool: &ThreadPool, previous: u64) -> EmptyObservation {
     let deadline = Instant::now() + Duration::from_secs(1);
-    while pool.wait_stats().empty_observations <= previous {
+
+    loop {
+        let stats = pool.wait_stats();
+        if stats.empty_observations > previous {
+            return EmptyObservation {
+                observation: stats.empty_observations,
+                timestamp_ns: stats.last_empty_ns,
+            };
+        }
+
         assert!(
             Instant::now() < deadline,
             "worker did not observe an empty queue within one second"
@@ -134,11 +157,14 @@ fn wait_for_next_empty(pool: &ThreadPool, previous: u64) {
     }
 }
 
-fn busy_wait(duration: Duration) {
-    let deadline = Instant::now() + duration;
-    while Instant::now() < deadline {
+fn busy_wait_until(target_ns: u64) {
+    while monotonic_now_ns() < target_ns {
         std::hint::spin_loop();
     }
+}
+
+fn mean(values: &[u64]) -> f64 {
+    values.iter().copied().sum::<u64>() as f64 / values.len() as f64
 }
 
 fn percentile(sorted: &[u64], quantile: f64) -> u64 {
