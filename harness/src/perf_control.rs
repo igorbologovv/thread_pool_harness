@@ -239,14 +239,14 @@ impl PerfSession {
                 Err(error) => return Err(error.into()),
             }
 
-            if let Some(child) = self.child.as_mut() {
-                if let Some(status) = child.try_wait()? {
-                    return Err(io::Error::other(format!(
-                        "perf exited before acknowledging \
-                             {command:?}: {status}"
-                    ))
-                    .into());
-                }
+            if let Some(child) = self.child.as_mut()
+                && let Some(status) = child.try_wait()?
+            {
+                return Err(io::Error::other(format!(
+                    "perf exited before acknowledging \
+                         {command:?}: {status}"
+                ))
+                .into());
             }
 
             if Instant::now() >= deadline {
@@ -304,12 +304,12 @@ impl PerfSession {
 
 impl Drop for PerfSession {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = send_signal(&child, libc::SIGINT);
+        if let Some(mut child) = self.child.take()
+            && child.try_wait().ok().flatten().is_none()
+        {
+            let _ = send_signal(&child, libc::SIGINT);
 
-                let _ = child.wait();
-            }
+            let _ = child.wait();
         }
 
         let _ = fs::remove_dir_all(&self.temp_dir);
