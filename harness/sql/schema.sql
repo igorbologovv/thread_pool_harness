@@ -20,7 +20,8 @@ INSERT OR IGNORE INTO schema_migrations (
     (4, 'Add Threadance worker spin-before-block duration'),
     (5, 'Allow deterministic fixed-arrivals delivery mode'),
     (6, 'Record actual wall-clock start time for measured runs'),
-    (7, 'Group benchmark sessions into campaigns');
+    (7, 'Group benchmark sessions into campaigns'),
+    (8, 'Record actual paced submission timing');
 
 
 -- ============================================================
@@ -254,6 +255,34 @@ CREATE TABLE IF NOT EXISTS run (
     error_text                  TEXT,
 
     UNIQUE (experiment_id, run_index)
+);
+
+
+-- ============================================================
+-- Actual paced work-unit submissions
+--
+-- One row per submitted work unit for paced delivery modes.
+-- All-at-once runs intentionally have no rows here.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS run_arrival (
+    run_id                      INTEGER NOT NULL
+                                    REFERENCES run(id)
+                                    ON DELETE CASCADE,
+
+    work_unit_index             INTEGER NOT NULL
+                                    CHECK (work_unit_index >= 0),
+
+    scheduled_offset_ns         INTEGER NOT NULL
+                                    CHECK (scheduled_offset_ns >= 0),
+
+    actual_submit_offset_ns     INTEGER NOT NULL
+                                    CHECK (actual_submit_offset_ns >= 0),
+
+    lateness_ns                 INTEGER NOT NULL
+                                    CHECK (lateness_ns >= 0),
+
+    PRIMARY KEY (run_id, work_unit_index)
 );
 
 

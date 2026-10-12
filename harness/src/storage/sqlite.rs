@@ -26,6 +26,8 @@ const MIGRATION_005_FIXED_ARRIVALS: &str =
     include_str!("../../sql/migrations/005_fixed_arrivals.sql");
 const MIGRATION_006_RUN_TIMING: &str = include_str!("../../sql/migrations/006_run_timing.sql");
 const MIGRATION_007_CAMPAIGN_ID: &str = include_str!("../../sql/migrations/007_campaign_id.sql");
+const MIGRATION_008_ARRIVAL_TIMING: &str =
+    include_str!("../../sql/migrations/008_arrival_timing.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -302,6 +304,19 @@ impl BenchmarkDb {
                 ",
             )?;
 
+            let mut arrival_statement = tx.prepare(
+                "
+                INSERT INTO run_arrival (
+                    run_id,
+                    work_unit_index,
+                    scheduled_offset_ns,
+                    actual_submit_offset_ns,
+                    lateness_ns
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ",
+            )?;
+
             let mut capture_statement = tx.prepare(
                 "
                 INSERT INTO perf_capture (
@@ -360,6 +375,16 @@ impl BenchmarkDb {
                 ])?;
 
                 let run_id = tx.last_insert_rowid();
+
+                for sample in &result.arrival_samples {
+                    arrival_statement.execute(params![
+                        run_id,
+                        u64_to_i64(sample.work_unit_index, "work_unit_index")?,
+                        u64_to_i64(sample.scheduled_offset_ns, "scheduled_offset_ns")?,
+                        u64_to_i64(sample.actual_submit_offset_ns, "actual_submit_offset_ns",)?,
+                        u64_to_i64(sample.lateness_ns, "lateness_ns")?,
+                    ])?;
+                }
 
                 if let Some(capture) = capture {
                     capture_statement.execute(params![
@@ -556,6 +581,22 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
 
     if !has_campaign_id {
         connection.execute_batch(MIGRATION_007_CAMPAIGN_ID)?;
+    }
+
+    let has_arrival_timing_migration: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM schema_migrations
+            WHERE version = 8
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_arrival_timing_migration {
+        connection.execute_batch(MIGRATION_008_ARRIVAL_TIMING)?;
     }
 
     Ok(())

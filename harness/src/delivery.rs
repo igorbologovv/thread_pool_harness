@@ -10,7 +10,10 @@ use std::{
 
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
-use crate::{result::RunResult, workload::Workload};
+use crate::{
+    result::{ArrivalSample, RunResult},
+    workload::Workload,
+};
 
 const STEADY_SHAPE: f64 = 4.0;
 const VARIABLE_SHAPE: f64 = 1.0;
@@ -315,6 +318,7 @@ where
         .expect("run timestamp does not fit u64");
 
     let start = Instant::now();
+    let mut arrival_samples = Vec::new();
 
     match schedule.mode() {
         DeliveryMode::AllAtOnce => {
@@ -324,10 +328,34 @@ where
         }
 
         _ => {
-            for (unit, &emit_offset) in work_units.iter().zip(schedule.offsets()) {
+            arrival_samples.reserve(work_units.len());
+
+            for (work_unit_index, (unit, &emit_offset)) in
+                work_units.iter().zip(schedule.offsets()).enumerate()
+            {
                 sleep_until(start + emit_offset);
 
-                submit(Arc::clone(workload), unit.clone(), Arc::clone(&completion));
+                let workload = Arc::clone(workload);
+                let unit = unit.clone();
+                let completion = Arc::clone(&completion);
+
+                let actual_submit_offset = start.elapsed();
+
+                submit(workload, unit, completion);
+
+                let scheduled_offset_ns = u64::try_from(emit_offset.as_nanos())
+                    .expect("scheduled arrival offset must fit in u64 nanoseconds");
+
+                let actual_submit_offset_ns = u64::try_from(actual_submit_offset.as_nanos())
+                    .expect("actual submit offset must fit in u64 nanoseconds");
+
+                arrival_samples.push(ArrivalSample {
+                    work_unit_index: u64::try_from(work_unit_index)
+                        .expect("work-unit index must fit in u64"),
+                    scheduled_offset_ns,
+                    actual_submit_offset_ns,
+                    lateness_ns: actual_submit_offset_ns.saturating_sub(scheduled_offset_ns),
+                });
             }
         }
     }
@@ -341,6 +369,7 @@ where
         completed_work_units,
         elapsed_ns: elapsed.as_nanos() as u64,
         work_units_per_second: completed_work_units as f64 / elapsed.as_secs_f64(),
+        arrival_samples,
     }
 }
 
