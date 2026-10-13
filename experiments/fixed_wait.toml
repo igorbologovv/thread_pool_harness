@@ -11,7 +11,10 @@ scheduler = "threadance"
 profile = "standard"
 
 [workload]
-workers = 8
+# Keep the main wait-policy experiment below full-machine saturation. Worker-
+# count scaling is studied separately; using four workers leaves CPU headroom
+# for the pacer, perf, the benchmark thread, and normal kernel activity.
+workers = 4
 work_units = 200
 validators = 2000
 signers_per_certificate = 1600
