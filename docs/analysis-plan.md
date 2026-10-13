@@ -37,7 +37,7 @@ The quantity \(\rho_{nominal}\) is an experimental control parameter rather than
 The final experiment uses:
 
 - workload: BLS aggregate verification;
-- workers: 8;
+- workers: 4;
 - work units: 200;
 - validators: 2000;
 - signers per certificate: 1600;
@@ -46,6 +46,8 @@ The final experiment uses:
 - fixed workload seed;
 - one cached BLS dataset reused by all configurations;
 - standard profiling mode.
+
+The main wait-policy campaign deliberately uses four workers rather than saturating the full machine. This leaves CPU headroom for the benchmark thread, arrival pacer, performance-counter control, kernel work, and unavoidable background activity. Worker-count scaling is treated as a separate experiment, where worker counts can be varied from one worker through the physical-core and logical-CPU ranges. The fixed-wait experiment therefore studies wait-policy behavior at a controlled worker count rather than conflating wait policy with full-machine scaling.
 
 The tested nominal offered-load values are:
 
@@ -74,11 +76,9 @@ to define the grid.
 
 There are 48 configurations in total.
 
-The experiment uses 20 randomized complete blocks. Every block contains all 48 configurations in independently randomized order.
+The experiment uses 20 randomized blocks. Every block contains all 48 configurations in independently randomized order.
 
-Each configuration receives 2 measured runs per block, for 40 measured runs per configuration in total. Every configuration also receives exactly 1 warm-up run before the measured runs in every block. The warm-up treatment is therefore identical across all blocks and configurations.
-
-The repetition design deliberately prioritizes temporal replication across more randomized blocks over many consecutive repeated runs inside a smaller number of blocks. This improves protection against slow machine-state drift while keeping total campaign duration manageable.
+Each configuration receives 2 measured runs per block, for 40 measured runs per configuration in total. Every newly created scheduler instance receives one identical warm-up run before those measured runs.
 
 ### Final Grid Revision
 
@@ -99,7 +99,7 @@ All configurations in the experiment use the same dataset bytes.
 
 Dataset generation and loading occur outside the measured interval.
 
-The exact cached dataset used by the campaign must be fingerprinted with SHA-256. The campaign artifacts retain the resolved dataset path, cache-format version, workload-generation parameters, file size, and SHA-256 digest so that reuse of the same dataset bytes is auditable.
+The cached dataset used by the campaign must be identified by its path, byte size, cache-format version, workload parameters, and SHA-256 checksum. The identity record is retained with the campaign artifacts so that all reported configurations can be tied to the exact same input bytes.
 
 The service time \(S\) is measured separately using the scheduler-free calibration binary.
 
@@ -114,6 +114,8 @@ This calibration is intentionally scheduler-free. Consequently, \(\rho_{nominal}
 The calibration artifact, raw calibration samples, source revision, CPU model, and environment information must be retained.
 
 A calibration is valid only for the matching calibration-relevant experiment code and machine configuration.
+
+Changing the fixed-wait worker count does not by itself invalidate the scheduler-free single-thread service-time calibration. The worker count enters the nominal offered-load calculation separately through \(W\).
 
 ## 4. Primary Outcomes
 
@@ -229,7 +231,7 @@ At minimum, plot the primary outcome against global experiment order and compare
 
 If block effects are visible, report them explicitly.
 
-The two repeated measured runs of one configuration inside one block are repeated measurements within the same local machine-state period; they must not be treated as if they provided the same temporal independence as measurements from different blocks.
+The two repeated runs of one configuration inside one block are repeated measurements within the same local machine-state period; they must not be treated as if they provided the same temporal independence as measurements from different blocks.
 
 For inferential comparisons, first summarize repeated runs within each block/configuration, then compare configurations within the same block. Uncertainty for cross-configuration effects should be estimated by resampling whole blocks or by another method that explicitly models the block structure.
 
@@ -328,8 +330,7 @@ The following artifacts must be retained:
 - experiment plan;
 - randomized execution order;
 - calibration artifact;
-- cached dataset identity/path and SHA-256 checksum;
-- frozen experiment configuration;
+- cached dataset identity/path and checksum;
 - environment metadata;
 - git commit;
 - CPU and kernel information;
