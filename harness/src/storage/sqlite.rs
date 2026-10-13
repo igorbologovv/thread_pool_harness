@@ -166,11 +166,6 @@ impl BenchmarkDb {
                     None,
                 ),
             },
-            SchedulerKind::AgaveWaker => (
-                Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                Some("agave-backoff"),
-                None,
-            ),
             SchedulerKind::Rayon | SchedulerKind::Bevy => (None, None, None),
         };
 
@@ -759,7 +754,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
     match scheduler {
         SchedulerKind::Rayon => "rayon",
         SchedulerKind::Bevy => "bevy",
-        SchedulerKind::Threadance | SchedulerKind::AgaveWaker => "threadance",
+        SchedulerKind::Threadance => "threadance",
     }
 }
 
