@@ -6,9 +6,9 @@ This experiment evaluates how Threadance worker wait policy interacts with offer
 
 The two experimental variables are:
 
-- offered load:
+- nominal offered load:
   \[
-  \rho = \frac{\lambda S}{W}
+  \rho_{nominal} = \frac{\lambda S}{W}
   \]
 - normalized spin duration:
   \[
@@ -30,6 +30,8 @@ The experiment tests whether the relative performance of wait policies changes a
 
 The prediction is used as a mechanistic reference, not as a fitted model.
 
+The quantity \(\rho_{nominal}\) is an experimental control parameter rather than a claim about exact runtime worker utilization. It is derived from scheduler-free single-thread service time and therefore does not account for multicore frequency changes, shared-cache effects, memory-system contention, or scheduler overhead. Where useful, the final analysis should compare nominal load with an empirical load measure based on observed saturated multicore service capacity.
+
 ## 2. Fixed Experimental Design
 
 The final experiment uses:
@@ -45,7 +47,7 @@ The final experiment uses:
 - one cached BLS dataset reused by all configurations;
 - standard profiling mode.
 
-The tested offered-load values are:
+The tested nominal offered-load values are:
 
 - 0.25
 - 0.50
@@ -97,26 +99,43 @@ Dataset generation and loading occur outside the measured interval.
 
 The service time \(S\) is measured separately using the scheduler-free calibration binary.
 
-The mean service time is used for offered-load calculations because
+The mean service time is used for nominal offered-load calculations because
 
 \[
-\rho = \lambda E[S] / W.
+\rho_{nominal} = \lambda E[S] / W.
 \]
+
+This calibration is intentionally scheduler-free. Consequently, \(\rho_{nominal}\) should not be described as measured CPU utilization or exact queueing-system utilization.
 
 The calibration artifact, raw calibration samples, source revision, CPU model, and environment information must be retained.
 
-A calibration is valid only for the matching experiment code revision and machine configuration.
+A calibration is valid only for the matching calibration-relevant experiment code and machine configuration.
 
 ## 4. Primary Outcomes
 
-The primary performance outcomes are:
+The main scientific question in the fixed-arrival experiment is the CPU cost of a wait policy while work arrives at an externally controlled rate.
 
-1. elapsed wall-clock time per benchmark run;
-2. throughput in work units per second.
+The primary performance outcome is therefore:
 
-Because work-unit count is fixed, elapsed time and throughput contain equivalent performance information. Elapsed time is treated as the primary latency-style measure, while throughput is reported for interpretability.
+1. CPU task-clock per completed work unit.
 
-For each configuration, report:
+The main supporting CPU-cost outcome is:
+
+2. cycles per completed work unit.
+
+For paced runs below saturation, total elapsed wall-clock time is strongly constrained by the externally imposed arrival window. Two wait policies may therefore consume substantially different CPU resources while producing nearly identical total elapsed time. Total elapsed time is not used as the primary wait-policy efficiency measure in that regime.
+
+A separate responsiveness outcome is the completion drain delay after the final actual submission:
+
+\[
+T_{drain} = T_{completion} - T_{last\ actual\ submission}.
+\]
+
+This quantity measures how long the pool takes to finish outstanding work after the paced input stream has ended. It is especially relevant near saturation, where backlog can accumulate.
+
+Elapsed wall-clock time and throughput are retained and reported as secondary end-to-end outcomes. Because work-unit count is fixed, they contain equivalent information for a given run.
+
+For each configuration, report at least:
 
 - number of valid runs;
 - mean;
@@ -131,27 +150,27 @@ For each configuration, report:
 - 95% confidence interval for the mean;
 - 95% confidence interval for the median where useful.
 
-Confidence intervals should be obtained using a nonparametric bootstrap unless there is a specific reason to use another estimator.
+Confidence intervals should be obtained using a nonparametric bootstrap unless there is a specific reason to use another estimator. For configuration comparisons in the randomized-block experiment, bootstrap resampling must preserve the block structure rather than treating all run-level observations as independent.
 
 The analysis must not assume Gaussian sampling distributions merely for convenience.
 
 ## 5. Secondary System-Level Outcomes
 
-Standard profiling measurements are secondary explanatory outcomes.
+Standard profiling measurements are explanatory outcomes supporting the primary CPU-efficiency result.
 
 These include, where available:
 
-- CPU task-clock;
 - cycles;
 - instructions;
 - branches;
 - branch misses;
 - context switches;
-- CPU migrations.
+- CPU migrations;
+- page faults.
 
 Derived quantities such as instructions per cycle may be calculated when useful.
 
-These metrics are used to explain observed performance differences and are not substitutes for the primary elapsed-time measurements.
+These metrics are used to explain observed performance differences. They should not replace the primary task-clock-per-work-unit comparison unless a specific measurement limitation is documented.
 
 ## 6. Distribution Diagnostics
 
@@ -206,20 +225,36 @@ At minimum, plot the primary outcome against global experiment order and compare
 
 If block effects are visible, report them explicitly.
 
-Comparisons between configurations should account for the fact that every configuration occurs once per block.
+The five repeated runs of one configuration inside one block are repeated measurements within the same local machine-state period; they must not be treated as if they provided the same temporal independence as measurements from different blocks.
+
+For inferential comparisons, first summarize repeated runs within each block/configuration, then compare configurations within the same block. Uncertainty for cross-configuration effects should be estimated by resampling whole blocks or by another method that explicitly models the block structure.
 
 ## 9. Pairwise and Relative Comparisons
 
-The main scientific comparison is how different spin durations perform at the same offered load.
+The main scientific comparison is how different spin durations perform at the same nominal offered load.
 
-For each \(\rho\), compare the tested \(\tau/S\) configurations using:
+For each \(\rho_{nominal}\), compare every tested spin duration with the zero-spin immediate-block reference within the same randomized block.
 
-- absolute difference in elapsed time;
-- relative difference in elapsed time;
-- absolute or relative throughput difference;
-- uncertainty intervals for these differences where practical.
+For a metric \(y\), define the block-level relative effect as
 
-The zero-spin configuration serves as the immediate-block reference.
+\[
+\Delta_{b,\rho,\tau}
+=
+\frac{\bar y_{b,\rho,\tau} - \bar y_{b,\rho,0}}
+{\bar y_{b,\rho,0}},
+\]
+
+where \(\bar y_{b,\rho,\tau}\) is the mean of the repeated runs for that configuration inside block \(b\).
+
+Primary pairwise comparisons should report:
+
+- absolute difference in task-clock per work unit;
+- relative difference in task-clock per work unit;
+- absolute or relative difference in cycles per work unit;
+- drain-delay difference where informative;
+- uncertainty intervals based on the randomized-block structure.
+
+Elapsed-time and throughput differences may also be reported, particularly near saturation, but are not the main efficiency comparison below saturation.
 
 The analysis should emphasize effect sizes and uncertainty rather than only binary significance decisions.
 
@@ -231,11 +266,11 @@ For each tested spin duration, compare the observed transition in relative perfo
 \rho^* = \frac{1}{1 + \tau/S}.
 \]
 
-The prediction is considered qualitatively supported if the observed change in relative behavior occurs near the predicted load region.
+The prediction is considered qualitatively supported if the observed change in relative behavior occurs near the predicted nominal-load region.
 
 The analysis must not claim that the formula is exact unless the data support that conclusion.
 
-Disagreement between the prediction and measurement is itself an experimental result and should be investigated using system-level measurements.
+Disagreement between the prediction and measurement is itself an experimental result and should be investigated using system-level measurements and, where relevant, the difference between nominal offered load and empirical multicore capacity.
 
 ## 11. Multiple Comparisons
 
@@ -264,7 +299,7 @@ Selection criteria may include:
 - configurations near an observed crossover;
 - unexpectedly good or bad configurations;
 - configurations with unusually high variance;
-- configurations where system-level counters do not explain the wall-time result.
+- configurations where system-level counters do not explain the primary CPU-efficiency result.
 
 Deep profiling passes are separate physical benchmark runs.
 
@@ -289,7 +324,7 @@ The following artifacts must be retained:
 - experiment plan;
 - randomized execution order;
 - calibration artifact;
-- cached dataset identity/path;
+- cached dataset identity/path and checksum;
 - environment metadata;
 - git commit;
 - CPU and kernel information;
