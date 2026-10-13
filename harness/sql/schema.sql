@@ -21,7 +21,8 @@ INSERT OR IGNORE INTO schema_migrations (
     (5, 'Allow deterministic fixed-arrivals delivery mode'),
     (6, 'Record actual wall-clock start time for measured runs'),
     (7, 'Group benchmark sessions into campaigns'),
-    (8, 'Record actual paced submission timing');
+    (8, 'Record actual paced submission timing'),
+    (9, 'Separate Threadance scheduler from worker wait policy');
 
 
 -- ============================================================
@@ -139,8 +140,19 @@ CREATE TABLE IF NOT EXISTS experiment (
     -- NULL for schedulers where this parameter does not apply.
     queue_capacity                  INTEGER,
 
+    -- Threadance worker wait/wake strategy.
+    -- NULL for non-Threadance schedulers.
+    threadance_wait_policy          TEXT
+                                        CHECK (
+                                            threadance_wait_policy IS NULL
+                                            OR threadance_wait_policy IN (
+                                                'spin-then-park',
+                                                'agave-backoff'
+                                            )
+                                        ),
+
     -- Threadance active-poll duration before blocking.
-    -- Zero means immediate blocking. NULL for other schedulers.
+    -- Zero means immediate blocking. NULL when not applicable.
     threadance_spin_us              INTEGER
                                         CHECK (
                                             threadance_spin_us IS NULL
@@ -423,6 +435,7 @@ SELECT
     e.profile_mode,
     e.workers,
     e.queue_capacity,
+    e.threadance_wait_policy,
     e.threadance_spin_us,
     e.delivery_mode,
     e.arrival_window_ms,

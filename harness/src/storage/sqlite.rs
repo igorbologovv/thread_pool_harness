@@ -10,7 +10,7 @@ use std::{
 use rusqlite::{Connection, params};
 
 use crate::{
-    cli::{Cli, ProfileMode, SchedulerKind, WorkloadKind},
+    cli::{Cli, ProfileMode, SchedulerKind, ThreadanceWaitPolicy, WorkloadKind},
     delivery::DeliveryMode,
     perf_control::{DEEP_PASSES, PerfCapture},
     result::RunResult,
@@ -28,6 +28,8 @@ const MIGRATION_006_RUN_TIMING: &str = include_str!("../../sql/migrations/006_ru
 const MIGRATION_007_CAMPAIGN_ID: &str = include_str!("../../sql/migrations/007_campaign_id.sql");
 const MIGRATION_008_ARRIVAL_TIMING: &str =
     include_str!("../../sql/migrations/008_arrival_timing.sql");
+const MIGRATION_009_THREADANCE_WAIT_POLICY: &str =
+    include_str!("../../sql/migrations/009_threadance_wait_policy.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -151,18 +153,25 @@ impl BenchmarkDb {
         let warmup_runs = usize_to_i64(cli.warmup, "warmup_runs")?;
         let measured_runs = usize_to_i64(cli.runs.get(), "measured_runs")?;
 
-        let queue_capacity = match cli.scheduler {
-            SchedulerKind::Threadance | SchedulerKind::AgaveWaker => {
-                Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?)
-            }
-            SchedulerKind::Rayon | SchedulerKind::Bevy => None,
-        };
-
-        let threadance_spin_us = match cli.scheduler {
-            SchedulerKind::Threadance => {
-                Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?)
-            }
-            SchedulerKind::Rayon | SchedulerKind::Bevy | SchedulerKind::AgaveWaker => None,
+        let (queue_capacity, threadance_wait_policy, threadance_spin_us) = match cli.scheduler {
+            SchedulerKind::Threadance => match cli.threadance_wait_policy {
+                ThreadanceWaitPolicy::SpinThenPark => (
+                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                    Some("spin-then-park"),
+                    Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
+                ),
+                ThreadanceWaitPolicy::AgaveBackoff => (
+                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                    Some("agave-backoff"),
+                    None,
+                ),
+            },
+            SchedulerKind::AgaveWaker => (
+                Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                Some("agave-backoff"),
+                None,
+            ),
+            SchedulerKind::Rayon | SchedulerKind::Bevy => (None, None, None),
         };
 
         let delivery_mode = cli.delivery_mode();
@@ -224,6 +233,7 @@ impl BenchmarkDb {
                 profile_mode,
                 workers,
                 queue_capacity,
+                threadance_wait_policy,
                 threadance_spin_us,
                 delivery_mode,
                 arrival_window_ms,
@@ -246,7 +256,7 @@ impl BenchmarkDb {
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15,
                 ?16, ?17, ?18, ?19, ?20,
-                NULL, NULL
+                ?21, NULL, NULL
             )
             ",
             params![
@@ -256,6 +266,7 @@ impl BenchmarkDb {
                 profile_name(cli.profile),
                 workers,
                 queue_capacity,
+                threadance_wait_policy,
                 threadance_spin_us,
                 delivery_mode.to_string(),
                 arrival_window_ms,
@@ -599,6 +610,36 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
         connection.execute_batch(MIGRATION_008_ARRIVAL_TIMING)?;
     }
 
+    let has_threadance_wait_policy: bool = connection.query_row(
+        "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pragma_table_info('experiment')
+            WHERE name = 'threadance_wait_policy'
+        )
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_threadance_wait_policy {
+        connection.execute_batch(MIGRATION_009_THREADANCE_WAIT_POLICY)?;
+    } else {
+        connection.execute(
+            "
+            INSERT OR IGNORE INTO schema_migrations (
+                version,
+                description
+            )
+            VALUES (
+                9,
+                'Separate Threadance scheduler from worker wait policy'
+            )
+            ",
+            [],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -718,8 +759,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
     match scheduler {
         SchedulerKind::Rayon => "rayon",
         SchedulerKind::Bevy => "bevy",
-        SchedulerKind::Threadance => "threadance",
-        SchedulerKind::AgaveWaker => "agave-waker",
+        SchedulerKind::Threadance | SchedulerKind::AgaveWaker => "threadance",
     }
 }
 
