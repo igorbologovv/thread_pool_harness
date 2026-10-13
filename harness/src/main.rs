@@ -15,7 +15,7 @@ use std::{
 
 use clap::Parser;
 
-use cli::{Cli, ProfileMode, SchedulerKind, WorkloadKind};
+use cli::{Cli, ProfileMode, SchedulerKind, ThreadanceWaitPolicy, WorkloadKind};
 use delivery::DeliverySchedule;
 use perf_control::DEEP_PASSES;
 use runner::{RepeatedRunOutput, run_repeated};
@@ -135,16 +135,29 @@ where
         }
 
         SchedulerKind::Threadance => {
-            let scheduler =
-                ThreadanceScheduler::new(cli.workers, cli.queue_capacity, cli.threadance_spin_us)
-                    .expect("failed to create Threadance thread pool");
+            let scheduler = match cli.threadance_wait_policy {
+                ThreadanceWaitPolicy::SpinThenPark => ThreadanceScheduler::new(
+                    cli.workers,
+                    cli.queue_capacity,
+                    cli.threadance_spin_us,
+                ),
+                ThreadanceWaitPolicy::AgaveBackoff => {
+                    ThreadanceScheduler::new_agave(cli.workers, cli.queue_capacity)
+                }
+            }
+            .expect("failed to create Threadance thread pool");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 
         SchedulerKind::AgaveWaker => {
+            eprintln!(
+                "WARNING: --scheduler=agave-waker is deprecated; use \
+                 --scheduler=threadance --threadance-wait-policy=agave-backoff"
+            );
+
             let scheduler = ThreadanceScheduler::new_agave(cli.workers, cli.queue_capacity)
-                .expect("failed to create Threadance pool with Agave waker");
+                .expect("failed to create Threadance pool with Agave backoff");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }

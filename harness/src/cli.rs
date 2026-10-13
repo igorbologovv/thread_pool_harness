@@ -35,9 +35,17 @@ pub struct Cli {
     #[arg(long, default_value = "1024")]
     pub queue_capacity: NonZeroUsize,
 
+    /// Threadance worker wait/wake strategy.
+    ///
+    /// `spin-then-park` uses --threadance-spin-us before blocking.
+    /// `agave-backoff` uses the Agave-style adaptive backoff strategy.
+    #[arg(long, value_enum, default_value = "spin-then-park")]
+    pub threadance_wait_policy: ThreadanceWaitPolicy,
+
     /// Time a Threadance worker actively polls an empty queue before blocking.
     ///
-    /// Zero means immediate blocking. Ignored by `agave-waker`.
+    /// Zero means immediate blocking. Used only by
+    /// --threadance-wait-policy=spin-then-park.
     #[arg(long, default_value_t = 0)]
     pub threadance_spin_us: u64,
 
@@ -195,7 +203,16 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
+
+    /// Deprecated compatibility entry point. Prefer
+    /// --scheduler=threadance --threadance-wait-policy=agave-backoff.
     AgaveWaker,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ThreadanceWaitPolicy {
+    SpinThenPark,
+    AgaveBackoff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
