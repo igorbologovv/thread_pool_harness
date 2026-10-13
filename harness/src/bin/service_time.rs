@@ -3,6 +3,7 @@
 mod workload;
 
 use std::{
+    fmt,
     fs::File,
     io::Write,
     path::PathBuf,
@@ -47,6 +48,43 @@ struct Cli {
     /// Directory containing reusable workload datasets.
     #[arg(long, default_value = "results/datasets")]
     dataset_cache_dir: PathBuf,
+}
+
+struct ServiceTimeSummary {
+    work_units: usize,
+    runs: usize,
+    mean_run_ns: f64,
+    median_run_ns: f64,
+    mean_service_ns: f64,
+    median_service_ns: f64,
+}
+
+impl fmt::Display for ServiceTimeSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Pure single-thread service-time calibration")?;
+        writeln!(f, "Work units              : {}", self.work_units)?;
+        writeln!(f, "Measured runs           : {}", self.runs)?;
+        writeln!(
+            f,
+            "Mean run elapsed        : {:.3} ms",
+            self.mean_run_ns / 1_000_000.0
+        )?;
+        writeln!(
+            f,
+            "Median run elapsed      : {:.3} ms",
+            self.median_run_ns / 1_000_000.0
+        )?;
+        writeln!(
+            f,
+            "Mean service time S     : {:.3} ms",
+            self.mean_service_ns / 1_000_000.0
+        )?;
+        write!(
+            f,
+            "Median service time S   : {:.3} ms",
+            self.median_service_ns / 1_000_000.0
+        )
+    }
 }
 
 fn run_once<W: Workload>(workload: &W) -> Duration {
@@ -126,20 +164,14 @@ fn main() {
         }
     }
 
-    println!("Pure single-thread service-time calibration");
-    println!("Work units              : {}", cli.work_units);
-    println!("Measured runs           : {}", cli.runs);
-    println!("Mean run elapsed        : {:.3} ms", mean_ns / 1_000_000.0);
-    println!(
-        "Median run elapsed      : {:.3} ms",
-        median_ns / 1_000_000.0
-    );
-    println!(
-        "Mean service time S     : {:.3} ms",
-        mean_service_ns / 1_000_000.0
-    );
-    println!(
-        "Median service time S   : {:.3} ms",
-        median_service_ns / 1_000_000.0
-    );
+    let summary = ServiceTimeSummary {
+        work_units: cli.work_units,
+        runs: cli.runs,
+        mean_run_ns: mean_ns,
+        median_run_ns: median_ns,
+        mean_service_ns,
+        median_service_ns,
+    };
+
+    println!("{summary}");
 }
