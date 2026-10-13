@@ -74,9 +74,11 @@ to define the grid.
 
 There are 48 configurations in total.
 
-The experiment uses 10 randomized blocks. Every block contains all 48 configurations in independently randomized order.
+The experiment uses 20 randomized complete blocks. Every block contains all 48 configurations in independently randomized order.
 
-Each configuration receives 5 measured runs per block, for 50 measured runs per configuration in total.
+Each configuration receives 2 measured runs per block, for 40 measured runs per configuration in total. Every configuration also receives exactly 1 warm-up run before the measured runs in every block. The warm-up treatment is therefore identical across all blocks and configurations.
+
+The repetition design deliberately prioritizes temporal replication across more randomized blocks over many consecutive repeated runs inside a smaller number of blocks. This improves protection against slow machine-state drift while keeping total campaign duration manageable.
 
 ### Final Grid Revision
 
@@ -96,6 +98,8 @@ The workload dataset is generated once and cached on disk.
 All configurations in the experiment use the same dataset bytes.
 
 Dataset generation and loading occur outside the measured interval.
+
+The exact cached dataset used by the campaign must be fingerprinted with SHA-256. The campaign artifacts retain the resolved dataset path, cache-format version, workload-generation parameters, file size, and SHA-256 digest so that reuse of the same dataset bytes is auditable.
 
 The service time \(S\) is measured separately using the scheduler-free calibration binary.
 
@@ -225,7 +229,7 @@ At minimum, plot the primary outcome against global experiment order and compare
 
 If block effects are visible, report them explicitly.
 
-The five repeated runs of one configuration inside one block are repeated measurements within the same local machine-state period; they must not be treated as if they provided the same temporal independence as measurements from different blocks.
+The two repeated measured runs of one configuration inside one block are repeated measurements within the same local machine-state period; they must not be treated as if they provided the same temporal independence as measurements from different blocks.
 
 For inferential comparisons, first summarize repeated runs within each block/configuration, then compare configurations within the same block. Uncertainty for cross-configuration effects should be estimated by resampling whole blocks or by another method that explicitly models the block structure.
 
@@ -324,7 +328,8 @@ The following artifacts must be retained:
 - experiment plan;
 - randomized execution order;
 - calibration artifact;
-- cached dataset identity/path and checksum;
+- cached dataset identity/path and SHA-256 checksum;
+- frozen experiment configuration;
 - environment metadata;
 - git commit;
 - CPU and kernel information;
