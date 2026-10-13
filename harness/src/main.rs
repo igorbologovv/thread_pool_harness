@@ -142,22 +142,10 @@ where
                     cli.threadance_spin_us,
                 ),
                 ThreadanceWaitPolicy::AgaveBackoff => {
-                    ThreadanceScheduler::new_agave(cli.workers, cli.queue_capacity)
+                    ThreadanceScheduler::new_agave_backoff(cli.workers, cli.queue_capacity)
                 }
             }
             .expect("failed to create Threadance thread pool");
-
-            run_benchmark(cli, &scheduler, workload, delivery)
-        }
-
-        SchedulerKind::AgaveWaker => {
-            eprintln!(
-                "WARNING: --scheduler=agave-waker is deprecated; use \
-                 --scheduler=threadance --threadance-wait-policy=agave-backoff"
-            );
-
-            let scheduler = ThreadanceScheduler::new_agave(cli.workers, cli.queue_capacity)
-                .expect("failed to create Threadance pool with Agave backoff");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }
