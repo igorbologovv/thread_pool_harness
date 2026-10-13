@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust format
+        run: cargo fmt --all -- --check
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            scripts/validate_calibration.py \
+            scripts/bls_dataset_identity.py \
+            scripts/run_fixed_wait.py \
+            scripts/run_capacity_reference.py \
+            analysis/fixed_wait.py \
+            analysis/diagnostics.py
+
+      - name: Fresh SQLite schema smoke test
+        run: |
+          DB="$(mktemp --suffix=.sqlite3)"
+          rm -f "$DB"
+          ./scripts/init_benchmark_db.sh "$DB"
+          sqlite3 "$DB" 'PRAGMA foreign_key_check;'
+          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "8"
