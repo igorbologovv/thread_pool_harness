@@ -1,11 +1,7 @@
-# Empirical four-worker saturated-capacity reference.
-#
-# This is not part of the fixed-arrival wait-policy grid. It estimates the
-# observed service capacity of the same BLS workload with four Threadance
-# workers under an all-at-once saturated queue.
+# Saturated maximum-throughput reference for the BLS workload.
 
 [experiment]
-name = "capacity-4w"
+name = "max-throughput"
 workload = "bls-aggregate-verify"
 scheduler = "threadance"
 profile = "none"
@@ -26,4 +22,4 @@ measured_runs = 30
 
 [artifacts]
 dataset_cache_dir = "results/datasets"
-output_root = "results/calibrations"
+output_root = "results/max_throughput"

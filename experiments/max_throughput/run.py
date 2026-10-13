@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure empirical four-worker saturated capacity for the BLS workload."""
+"""Measure saturated maximum throughput for the configured BLS workload."""
 
 from __future__ import annotations
 
@@ -18,19 +18,24 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from bls_dataset_identity import config_from_experiment, expected_dataset_path, identify_dataset
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from experiments.common.bls_dataset_identity import (
+    config_from_experiment,
+    expected_dataset_path,
+    identify_dataset,
+)
 
 BOOTSTRAP_REPLICATES = 10_000
 BOOTSTRAP_SEED = 20261013
+EXPERIMENT = ROOT / "experiments" / "max_throughput" / "experiment.toml"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Measure saturated four-worker capacity")
-    parser.add_argument(
-        "--experiment",
-        type=Path,
-        default=Path("experiments/capacity_4w.toml"),
-    )
+    parser = argparse.ArgumentParser(description="Measure saturated maximum throughput")
+    parser.add_argument("--experiment", type=Path, default=EXPERIMENT)
     parser.add_argument("--allow-dirty", action="store_true")
     return parser.parse_args()
 
@@ -67,13 +72,12 @@ def bootstrap_mean_ci(values: list[float]) -> tuple[float, float]:
 
 def main() -> int:
     args = parse_args()
-    root = Path(capture(["git", "rev-parse", "--show-toplevel"])).resolve()
-    os.chdir(root)
+    os.chdir(ROOT)
 
     if not args.allow_dirty:
         dirty = capture(["git", "status", "--porcelain", "--untracked-files=no"])
         if dirty:
-            raise RuntimeError("tracked files are dirty; commit or restore before calibration")
+            raise RuntimeError("tracked files are dirty; commit or restore before benchmarking")
 
     experiment_path = args.experiment.resolve()
     data = tomllib.loads(experiment_path.read_text())
@@ -83,18 +87,16 @@ def main() -> int:
     artifacts = data["artifacts"]
 
     if experiment["workload"] != "bls-aggregate-verify":
-        raise ValueError("capacity reference requires BLS workload")
+        raise ValueError("max-throughput experiment requires BLS workload")
     if experiment["scheduler"] != "threadance":
-        raise ValueError("capacity reference requires Threadance")
-    if int(workload["workers"]) != 4:
-        raise ValueError("capacity reference must use exactly four workers")
+        raise ValueError("max-throughput experiment requires Threadance")
 
     cache_dir, dataset_config = config_from_experiment(experiment_path)
     dataset_path = expected_dataset_path(cache_dir, dataset_config)
     dataset_identity = identify_dataset(dataset_path, dataset_config)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    campaign_id = f"capacity-4w-{stamp}"
+    campaign_id = f"max-throughput-{stamp}"
     out = Path(artifacts["output_root"]) / campaign_id
     out.mkdir(parents=True, exist_ok=False)
     db_path = out / "benchmarks.sqlite3"
@@ -105,54 +107,30 @@ def main() -> int:
     )
 
     subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "-p",
-            "threadance-harness",
-            "--bin",
-            "threadance-harness",
-        ],
+        ["cargo", "build", "--release", "-p", "threadance-harness", "--bin", "threadance-harness"],
         check=True,
     )
 
-    binary = root / "target" / "release" / "threadance-harness"
+    binary = ROOT / "target" / "release" / "threadance-harness"
     command = [
         str(binary),
-        "--workload",
-        experiment["workload"],
-        "--scheduler",
-        experiment["scheduler"],
-        "--workers",
-        str(workload["workers"]),
-        "--queue-capacity",
-        str(workload["queue_capacity"]),
-        "--threadance-spin-us",
-        str(workload["threadance_spin_us"]),
-        "--work-units",
-        str(workload["work_units"]),
-        "--validators",
-        str(workload["validators"]),
-        "--signers-per-certificate",
-        str(workload["signers_per_certificate"]),
-        "--certificates-per-work-unit",
-        str(workload["certificates_per_work_unit"]),
-        "--seed",
-        str(workload["workload_seed"]),
-        "--dataset-cache-dir",
-        str(Path(artifacts["dataset_cache_dir"]).resolve()),
+        "--workload", experiment["workload"],
+        "--scheduler", experiment["scheduler"],
+        "--workers", str(workload["workers"]),
+        "--queue-capacity", str(workload["queue_capacity"]),
+        "--threadance-spin-us", str(workload["threadance_spin_us"]),
+        "--work-units", str(workload["work_units"]),
+        "--validators", str(workload["validators"]),
+        "--signers-per-certificate", str(workload["signers_per_certificate"]),
+        "--certificates-per-work-unit", str(workload["certificates_per_work_unit"]),
+        "--seed", str(workload["workload_seed"]),
+        "--dataset-cache-dir", str(Path(artifacts["dataset_cache_dir"]).resolve()),
         "--all-at-once",
-        "--warmup",
-        str(repetitions["warmup_runs"]),
-        "--runs",
-        str(repetitions["measured_runs"]),
-        "--profile",
-        experiment["profile"],
-        "--campaign-id",
-        campaign_id,
-        "--database",
-        str(db_path.resolve()),
+        "--warmup", str(repetitions["warmup_runs"]),
+        "--runs", str(repetitions["measured_runs"]),
+        "--profile", experiment["profile"],
+        "--campaign-id", campaign_id,
+        "--database", str(db_path.resolve()),
     ]
 
     log_path = out / "run.log"
@@ -169,7 +147,7 @@ def main() -> int:
             sys.stdout.write(line)
             log.write(line)
         if process.wait() != 0:
-            raise RuntimeError(f"capacity benchmark failed; see {log_path}")
+            raise RuntimeError(f"max-throughput benchmark failed; see {log_path}")
 
     connection = sqlite3.connect(db_path)
     try:
@@ -218,12 +196,13 @@ def main() -> int:
         "dataset_sha256": dataset_identity.sha256,
         "git_commit": capture(["git", "rev-parse", "HEAD"]),
     }
-    summary_path = out / "capacity.json"
+    summary_path = out / "max_throughput.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
     print()
-    print("Four-worker saturated capacity reference complete")
-    print(f"  mean mu_4   = {summary['throughput_work_units_per_second']['mean']:.3f} WU/s")
+    print("Maximum-throughput reference complete")
+    print(f"  workers     = {workload['workers']}")
+    print(f"  mean        = {summary['throughput_work_units_per_second']['mean']:.3f} WU/s")
     print(f"  median      = {summary['throughput_work_units_per_second']['median']:.3f} WU/s")
     print(f"  95% CI mean = [{ci_low:.3f}, {ci_high:.3f}] WU/s")
     print(f"  artifact    = {summary_path}")

@@ -31,17 +31,20 @@ jobs:
       - name: Python syntax
         run: |
           python3 -m py_compile \
-            scripts/calibrate_service_time.py \
-            scripts/validate_calibration.py \
-            scripts/bls_dataset_identity.py \
-            scripts/run_fixed_wait.py \
-            scripts/fixed_wait_campaign.py \
-            scripts/run_capacity_reference.py \
-            analysis/fixed_wait.py \
-            analysis/diagnostics.py
+            experiments/common/calibrate_service_time.py \
+            experiments/common/validate_calibration.py \
+            experiments/common/bls_dataset_identity.py \
+            experiments/fixed_wait/run.py \
+            experiments/fixed_wait/campaign.py \
+            experiments/fixed_wait/analysis.py \
+            experiments/fixed_wait/diagnostics.py \
+            experiments/max_throughput/run.py
 
       - name: Shell syntax
-        run: bash -n scripts/calibrate_service_time.sh
+        run: |
+          bash -n scripts/calibrate_service_time.sh
+          bash -n scripts/run_wait_policy_probe.sh
+          bash -n scripts/init_benchmark_db.sh
 
       - name: Fresh SQLite schema smoke test
         run: |
