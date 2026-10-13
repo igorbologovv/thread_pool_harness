@@ -203,10 +203,6 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
-
-    /// Deprecated compatibility entry point. Prefer
-    /// --scheduler=threadance --threadance-wait-policy=agave-backoff.
-    AgaveWaker,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
