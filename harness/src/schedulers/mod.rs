@@ -126,8 +126,8 @@ mod tests {
     }
 
     #[test]
-    fn agave_waker_executes_every_work_unit_exactly_once() {
-        let scheduler = ThreadanceScheduler::new_agave(
+    fn threadance_agave_backoff_executes_every_work_unit_exactly_once() {
+        let scheduler = ThreadanceScheduler::new_agave_backoff(
             NonZeroUsize::new(WORKERS).unwrap(),
             NonZeroUsize::new(WORK_UNITS).unwrap(),
         )
