@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compare Threadance fixed spin durations against Agave's fixed backoff policy
-# under the same one-worker BLS workload and deterministic arrival schedule.
-# The service time and all pacing parameters are derived from an existing
+# Compare Threadance fixed spin durations against the Agave-style adaptive
+# backoff policy under the same one-worker BLS workload and deterministic
+# arrival schedule. Service time and pacing parameters come from an existing
 # scheduler-free calibration artifact; no arrival interval is entered by hand.
 
 CALIBRATION_FILE=""
@@ -30,7 +30,7 @@ points from the calibration, then compares:
   Threadance tau = 0.25 * predicted idle gap
   Threadance tau = 1.00 * predicted idle gap
   Threadance tau = 2.00 * predicted idle gap
-  Agave waker    = fixed Agave backoff policy, no tau
+  Agave backoff  = adaptive backoff policy, no tau
 EOF
 }
 
@@ -104,184 +104,8 @@ fi
 
 CALIBRATION_FILE="$(realpath "$CALIBRATION_FILE")"
 
-# Validate and read the existing scheduler-free calibration. Only changes that
-# can affect the measured BLS execute path invalidate the artifact. Test-only
-# edits and unrelated scheduler dependencies must not force recalibration.
 mapfile -t CALIBRATION_VALUES < <(
-    python3 - \
-        "$CALIBRATION_FILE" \
-        "$(git rev-parse HEAD)" \
-        "$(uname -m)" \
-        "$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)" \
-        <<'PY'
-import json
-import math
-import subprocess
-import sys
-import tomllib
-from pathlib import Path
-
-path, current_commit, current_arch, current_cpu = sys.argv[1:]
-
-try:
-    data = json.loads(Path(path).read_text())
-except Exception as exc:
-    raise SystemExit(f"ERROR: could not read calibration JSON: {exc}")
-
-errors = []
-
-if data.get("schema_version") != 1:
-    errors.append(f"unsupported schema_version {data.get('schema_version')!r}")
-
-if data.get("workload") != "bls-aggregate-verify":
-    errors.append(
-        "workload mismatch: expected 'bls-aggregate-verify', got "
-        f"{data.get('workload')!r}"
-    )
-
-config = data.get("workload_config", {})
-required_config = [
-    "calibration_work_units",
-    "validators",
-    "signers_per_certificate",
-    "certificates_per_work_unit",
-    "workload_seed",
-]
-for key in required_config:
-    if key not in config:
-        errors.append(f"workload_config.{key} is missing")
-
-service = data.get("service_time", {})
-try:
-    s_us = float(service["mean_us"])
-except Exception:
-    s_us = math.nan
-    errors.append("service_time.mean_us is missing or invalid")
-
-if not math.isfinite(s_us) or s_us <= 0:
-    errors.append(f"service_time.mean_us must be finite and > 0, got {s_us!r}")
-
-provenance = data.get("provenance", {})
-cal_commit = provenance.get("git_commit")
-
-
-def git_show(commit, file_path):
-    result = subprocess.run(
-        ["git", "show", f"{commit}:{file_path}"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
-    return result.stdout
-
-
-def strip_tests(source):
-    # Rust workload tests are not part of the benchmark binary hot path.
-    marker = "\n#[cfg(test)]"
-    return source.split(marker, 1)[0]
-
-
-def lock_package_signature(lock_text, package_names):
-    data = tomllib.loads(lock_text)
-    signatures = []
-    for package in data.get("package", []):
-        if package.get("name") in package_names:
-            signatures.append(
-                (
-                    package.get("name"),
-                    package.get("version"),
-                    package.get("source"),
-                    package.get("checksum"),
-                    tuple(package.get("dependencies", [])),
-                )
-            )
-    return sorted(signatures)
-
-
-if not cal_commit:
-    errors.append("calibration provenance.git_commit is missing")
-else:
-    try:
-        # These files directly define the scheduler-free calibration and the
-        # non-test BLS workload code. Compare them exactly, except for the
-        # #[cfg(test)] section of the workload implementation.
-        exact_paths = [
-            "Cargo.toml",
-            "harness/Cargo.toml",
-            "harness/src/bin/service_time.rs",
-            "harness/src/workload/mod.rs",
-        ]
-        for file_path in exact_paths:
-            old = git_show(cal_commit, file_path)
-            new = git_show(current_commit, file_path)
-            if old != new:
-                errors.append(
-                    f"calibration-relevant source changed since calibration: {file_path}"
-                )
-
-        workload_path = "harness/src/workload/bls_aggregate_verify.rs"
-        old_workload = strip_tests(git_show(cal_commit, workload_path))
-        new_workload = strip_tests(git_show(current_commit, workload_path))
-        if old_workload != new_workload:
-            errors.append(
-                "calibration-relevant source changed since calibration: "
-                f"{workload_path} (non-test code)"
-            )
-
-        # Cargo.lock may change because scheduler-only dependencies are added.
-        # Only reject when the BLS verification dependency records themselves
-        # changed. This avoids invalidating S for unrelated Threadance changes.
-        bls_packages = {
-            "solana-bls-signatures",
-            "blst",
-            "blstrs",
-            "ff",
-            "group",
-            "pairing",
-            "subtle",
-            "zeroize",
-        }
-        old_lock = git_show(cal_commit, "Cargo.lock")
-        new_lock = git_show(current_commit, "Cargo.lock")
-        if lock_package_signature(old_lock, bls_packages) != lock_package_signature(
-            new_lock, bls_packages
-        ):
-            errors.append(
-                "BLS dependency versions in Cargo.lock changed since calibration"
-            )
-    except Exception as exc:
-        errors.append(f"could not validate calibration source: {exc}")
-
-if provenance.get("architecture") != current_arch:
-    errors.append(
-        "architecture mismatch: "
-        f"calibration={provenance.get('architecture')!r}, current={current_arch!r}"
-    )
-
-if provenance.get("cpu_model") != current_cpu:
-    errors.append(
-        "CPU model mismatch: "
-        f"calibration={provenance.get('cpu_model')!r}, current={current_cpu!r}"
-    )
-
-if errors:
-    print("ERROR: calibration is not valid for this probe.", file=sys.stderr)
-    for error in errors:
-        print(f"  - {error}", file=sys.stderr)
-    raise SystemExit(1)
-
-print(f"{s_us:.9f}")
-print(data.get("calibration_id", "unknown"))
-print(service.get("samples", "unknown"))
-print(service.get("median_us", "nan"))
-print(config["calibration_work_units"])
-print(config["validators"])
-print(config["signers_per_certificate"])
-print(config["certificates_per_work_unit"])
-print(config["workload_seed"])
-PY
+    python3 scripts/validate_calibration.py --calibration "$CALIBRATION_FILE"
 )
 
 if (( ${#CALIBRATION_VALUES[@]} != 9 )); then
@@ -440,15 +264,17 @@ boundary = int(sys.argv[5])
 high = int(sys.argv[6])
 
 configs = [
-    ("threadance-low", "threadance", str(low)),
-    ("threadance-boundary", "threadance", str(boundary)),
-    ("threadance-high", "threadance", str(high)),
-    ("agave-waker", "agave-waker", ""),
+    ("threadance-low", "threadance", "spin-then-park", str(low)),
+    ("threadance-boundary", "threadance", "spin-then-park", str(boundary)),
+    ("threadance-high", "threadance", "spin-then-park", str(high)),
+    ("agave-backoff", "threadance", "agave-backoff", ""),
 ]
 
 with open(path, "w", newline="") as handle:
     writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    writer.writerow(["block", "order_in_block", "label", "scheduler", "tau_us"])
+    writer.writerow(
+        ["block", "order_in_block", "label", "scheduler", "wait_policy", "tau_us"]
+    )
 
     for block in range(1, blocks + 1):
         rows = configs.copy()
@@ -458,13 +284,13 @@ with open(path, "w", newline="") as handle:
 PY
 
 printf '%s\n' \
-'experiment_id,block,order_in_block,label,scheduler,tau_us,rho,arrival_rate,predicted_idle_us,log' \
+'experiment_id,block,order_in_block,label,scheduler,wait_policy,tau_us,rho,arrival_rate,predicted_idle_us,log' \
 > "$MANIFEST"
 
 TOTAL="$((BLOCKS * 4))"
 CURRENT=0
 
-while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER TAU_US; do
+while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER WAIT_POLICY TAU_US; do
     CURRENT=$((CURRENT + 1))
 
     if (( BLOCK == 1 )); then
@@ -479,10 +305,11 @@ while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER TAU_US; do
     echo "block          = $BLOCK / $BLOCKS"
     echo "configuration  = $LABEL"
     echo "scheduler      = $SCHEDULER"
+    echo "wait policy    = $WAIT_POLICY"
     if [[ -n "$TAU_US" ]]; then
         echo "tau            = $TAU_US us"
     else
-        echo "tau            = n/a (Agave fixed backoff)"
+        echo "tau            = n/a"
     fi
     echo "arrival rate   = $ARRIVAL_RATE work units/s"
     echo "predicted idle = $IDLE_GAP_US us"
@@ -496,6 +323,7 @@ while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER TAU_US; do
         --scheduler "$SCHEDULER"
         --workers "$WORKERS"
         --queue-capacity "$QUEUE_CAPACITY"
+        --threadance-wait-policy "$WAIT_POLICY"
         --work-units "$WORK_UNITS"
         --validators "$VALIDATORS"
         --signers-per-certificate "$SIGNERS_PER_CERTIFICATE"
@@ -510,7 +338,7 @@ while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER TAU_US; do
         --database "$DB"
     )
 
-    if [[ "$SCHEDULER" == "threadance" ]]; then
+    if [[ "$WAIT_POLICY" == "spin-then-park" ]]; then
         CMD+=(--threadance-spin-us "$TAU_US")
     fi
 
@@ -526,12 +354,13 @@ while IFS=$'\t' read -r BLOCK ORDER LABEL SCHEDULER TAU_US; do
         exit 1
     fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$EXPERIMENT_ID" \
         "$BLOCK" \
         "$ORDER" \
         "$LABEL" \
         "$SCHEDULER" \
+        "$WAIT_POLICY" \
         "$TAU_US" \
         "$RHO" \
         "$ARRIVAL_RATE" \
@@ -635,7 +464,7 @@ order = [
     "threadance-low",
     "threadance-boundary",
     "threadance-high",
-    "agave-waker",
+    "agave-backoff",
 ]
 
 
