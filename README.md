@@ -35,21 +35,38 @@ docs/analysis-plan.md
 
 ## Measurement workflow
 
-### 1. Create or reuse the deterministic BLS dataset
+### 1. Run the fixed-arrival wait-policy campaign
 
-The harness stores reusable datasets under `results/datasets/` by default. Dataset generation and loading occur outside measured intervals.
+```bash
+python3 scripts/run_fixed_wait.py
+```
 
-Campaigns record the exact dataset path, parameters, byte size, format version, and SHA-256 checksum.
+The campaign runner reads scientific parameters from `experiments/fixed_wait.toml`. Before measurements it resolves the scheduler-free BLS service-time calibration required to convert nominal load `rho` into an arrival rate.
 
-### 2. Calibrate scheduler-free service time
+If a compatible calibration already exists under `results/calibrations/`, it is reused. Otherwise the runner creates a fresh calibration automatically with the workload parameters from the experiment definition, then continues the campaign.
+
+The BLS dataset is also cached under `results/datasets/`. Dataset generation and loading occur outside measured intervals. Campaigns record the exact dataset path, parameters, byte size, format version, and SHA-256 checksum.
+
+A campaign stores its SQLite database, randomized plan, manifest, calibration copy, dataset identity, environment metadata, logs, and analysis outputs under `results/sweeps/`.
+
+For debugging or a controlled manual comparison, an explicit calibration can still be supplied:
+
+```bash
+python3 scripts/run_fixed_wait.py \
+  --calibration results/calibrations/.../calibration.json
+```
+
+### 2. Create or inspect a calibration manually
+
+Normal campaigns do not require this step. A standalone scheduler-free calibration can still be created with:
 
 ```bash
 ./scripts/calibrate_service_time.sh
 ```
 
-This measures single-thread scheduler-free service time `S` for the exact BLS workload and stores raw calibration samples and provenance under `results/calibrations/`.
+This measures single-thread scheduler-free service time `S` and stores raw samples, summary statistics, environment metadata, and `calibration.json` under `results/calibrations/`.
 
-Calibration compatibility is checked by:
+Calibration compatibility can be checked directly with:
 
 ```bash
 python3 scripts/validate_calibration.py --calibration PATH/TO/calibration.json
@@ -63,23 +80,7 @@ python3 scripts/run_capacity_reference.py
 
 This produces a separate saturated all-at-once reference for 4 workers. It is used to compare the mechanistic nominal-load parameter with observed multicore service capacity.
 
-### 4. Run the fixed-arrival wait-policy campaign
-
-```bash
-python3 scripts/run_fixed_wait.py \
-  --calibration results/calibrations/.../calibration.json
-```
-
-The legacy shell entry point remains as a thin compatibility wrapper:
-
-```bash
-./scripts/run_fixed_wait_sweep.sh \
-  --calibration results/calibrations/.../calibration.json
-```
-
-A campaign stores its SQLite database, randomized plan, manifest, calibration copy, dataset identity, environment metadata, logs, and analysis outputs under `results/sweeps/`.
-
-### 5. Re-run analysis without re-running benchmarks
+### 4. Re-run analysis without re-running benchmarks
 
 ```bash
 python3 analysis/fixed_wait.py results/sweeps/FIXED-WAIT-CAMPAIGN
@@ -120,7 +121,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Python analysis and orchestration scripts use only the standard library unless otherwise documented.
 
-GitHub Actions runs Rust formatting/tests/clippy, Python syntax checks, and a fresh SQLite schema smoke test.
+GitHub Actions runs Rust formatting/tests/clippy, Python and shell syntax checks, and a fresh SQLite schema smoke test.
 
 ## Reproducibility
 

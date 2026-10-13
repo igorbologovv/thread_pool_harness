@@ -48,4 +48,5 @@ seed = 20261007
 
 [artifacts]
 dataset_cache_dir = "results/datasets"
+calibration_cache_dir = "results/calibrations"
 output_root = "results/sweeps"
