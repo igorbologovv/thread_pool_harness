@@ -1,5 +1,9 @@
 /target
 
+# Python bytecode caches
+__pycache__/
+*.pyc
+
 # Local profiling / assembly artifacts
 /assembly.txt
 /execute.asm
