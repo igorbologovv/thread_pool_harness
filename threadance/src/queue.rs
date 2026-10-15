@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use crossbeam_channel::{RecvError, TryRecvError, bounded};
+use crossbeam_channel::{TryRecvError, bounded};
 
 use crate::Task;
 
@@ -52,8 +52,8 @@ pub struct CrossbeamConsumer {
 }
 
 impl CrossbeamConsumer {
-    pub(crate) fn recv_blocking(&self) -> Result<Task, RecvError> {
-        self.inner.recv()
+    pub(crate) fn receiver(&self) -> &crossbeam_channel::Receiver<Task> {
+        &self.inner
     }
 }
 
