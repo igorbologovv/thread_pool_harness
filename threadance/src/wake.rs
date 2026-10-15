@@ -1,7 +1,12 @@
 use std::{
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering, fence},
+    },
     time::{Duration, Instant},
 };
+
+use crossbeam_channel::{Receiver, Sender, bounded, select};
 
 use crate::{
     Task,
@@ -16,6 +21,7 @@ const AGAVE_BACKOFF_YIELD_LIMIT: u32 = 10;
 pub enum WaitResult {
     Task(Task),
     Disconnected,
+    Interrupted,
 }
 
 /// Complete idle/wake algorithm for a worker pool.
@@ -26,14 +32,14 @@ pub enum WaitResult {
 /// worker-side consumer supplied by the pool.
 pub trait WakePolicy<C: TaskConsumer>: Send + Sync + 'static {
     /// Called after the worker has already observed its queue empty. This method
-    /// owns the whole idle episode and returns only when a task is available or
-    /// the queue has disconnected.
+    /// owns the whole idle episode and returns when a task is available, the
+    /// queue disconnects, or pool shutdown interrupts the wait.
     fn wait(&self, consumer: &C) -> WaitResult;
 
     /// Called after a task has been pushed successfully.
     fn wake_one(&self);
 
-    /// Called after the producer side is disconnected during pool shutdown.
+    /// Permanently interrupts all current and future waits during pool shutdown.
     fn wake_all(&self);
 
     /// Number of workers currently sleeping in the policy's blocking path.
@@ -42,29 +48,51 @@ pub trait WakePolicy<C: TaskConsumer>: Send + Sync + 'static {
     }
 }
 
-/// Delegate the complete wait/wake protocol to Crossbeam's channel.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CrossbeamWait;
+/// Delegate task blocking to Crossbeam while retaining an explicit shutdown path.
+pub struct CrossbeamWait {
+    shutdown_sender: Mutex<Option<Sender<()>>>,
+    shutdown_receiver: Receiver<()>,
+}
+
+impl Default for CrossbeamWait {
+    fn default() -> Self {
+        let (shutdown_sender, shutdown_receiver) = bounded(0);
+        Self {
+            shutdown_sender: Mutex::new(Some(shutdown_sender)),
+            shutdown_receiver,
+        }
+    }
+}
 
 impl WakePolicy<CrossbeamConsumer> for CrossbeamWait {
     #[inline]
     fn wait(&self, consumer: &CrossbeamConsumer) -> WaitResult {
-        match consumer.recv_blocking() {
-            Ok(task) => WaitResult::Task(task),
-            Err(_) => WaitResult::Disconnected,
+        select! {
+            recv(consumer.receiver()) -> result => match result {
+                Ok(task) => WaitResult::Task(task),
+                Err(_) => WaitResult::Disconnected,
+            },
+            recv(self.shutdown_receiver) -> _ => WaitResult::Interrupted,
         }
     }
 
     #[inline]
     fn wake_one(&self) {}
 
-    #[inline]
-    fn wake_all(&self) {}
+    fn wake_all(&self) {
+        drop(
+            self.shutdown_sender
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take(),
+        );
+    }
 }
 
 /// Spin for a fixed duration, then park on a shared atomic wake event.
 pub struct SpinThenPark {
     spin_duration: Duration,
+    shutdown: AtomicBool,
     event: WakeEvent,
 }
 
@@ -72,6 +100,7 @@ impl SpinThenPark {
     pub fn new(spin_duration: Duration) -> Self {
         Self {
             spin_duration,
+            shutdown: AtomicBool::new(false),
             event: WakeEvent::default(),
         }
     }
@@ -84,10 +113,17 @@ impl SpinThenPark {
     #[inline(never)]
     fn wait_parked<C: TaskConsumer>(&self, consumer: &C) -> WaitResult {
         loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                return WaitResult::Interrupted;
+            }
+
             let waiter = self.event.register_waiter();
             match consumer.try_pop() {
                 QueuePop::Item(task) => return WaitResult::Task(task),
                 QueuePop::Disconnected => return WaitResult::Disconnected,
+                QueuePop::Empty if self.shutdown.load(Ordering::Acquire) => {
+                    return WaitResult::Interrupted;
+                }
                 QueuePop::Empty => waiter.wait(),
             }
         }
@@ -96,12 +132,20 @@ impl SpinThenPark {
 
 impl<C: TaskConsumer> WakePolicy<C> for SpinThenPark {
     fn wait(&self, consumer: &C) -> WaitResult {
+        if self.shutdown.load(Ordering::Acquire) {
+            return WaitResult::Interrupted;
+        }
+
         if !self.spin_duration.is_zero() {
             let deadline = Instant::now()
                 .checked_add(self.spin_duration)
                 .expect("worker spin duration is too large");
 
             loop {
+                if self.shutdown.load(Ordering::Acquire) {
+                    return WaitResult::Interrupted;
+                }
+
                 std::hint::spin_loop();
 
                 match consumer.try_pop() {
@@ -122,6 +166,7 @@ impl<C: TaskConsumer> WakePolicy<C> for SpinThenPark {
     }
 
     fn wake_all(&self) {
+        self.shutdown.store(true, Ordering::Release);
         self.event.wake_all();
     }
 
@@ -133,12 +178,17 @@ impl<C: TaskConsumer> WakePolicy<C> for SpinThenPark {
 /// Agave-style fixed spin/yield backoff followed by atomic blocking wake-up.
 #[derive(Default)]
 pub struct AgaveBackoff {
+    shutdown: AtomicBool,
     event: WakeEvent,
 }
 
 impl<C: TaskConsumer> WakePolicy<C> for AgaveBackoff {
     fn wait(&self, consumer: &C) -> WaitResult {
         for step in 0..=AGAVE_BACKOFF_YIELD_LIMIT {
+            if self.shutdown.load(Ordering::Acquire) {
+                return WaitResult::Interrupted;
+            }
+
             if step <= AGAVE_BACKOFF_SPIN_LIMIT {
                 for _ in 0..(1u32 << step) {
                     std::hint::spin_loop();
@@ -155,10 +205,17 @@ impl<C: TaskConsumer> WakePolicy<C> for AgaveBackoff {
         }
 
         loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                return WaitResult::Interrupted;
+            }
+
             let waiter = self.event.register_waiter();
             match consumer.try_pop() {
                 QueuePop::Item(task) => return WaitResult::Task(task),
                 QueuePop::Disconnected => return WaitResult::Disconnected,
+                QueuePop::Empty if self.shutdown.load(Ordering::Acquire) => {
+                    return WaitResult::Interrupted;
+                }
                 QueuePop::Empty => waiter.wait(),
             }
         }
@@ -170,6 +227,7 @@ impl<C: TaskConsumer> WakePolicy<C> for AgaveBackoff {
     }
 
     fn wake_all(&self) {
+        self.shutdown.store(true, Ordering::Release);
         self.event.wake_all();
     }
 
