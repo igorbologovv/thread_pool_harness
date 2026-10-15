@@ -16,22 +16,30 @@ Threadance separates two decisions:
 For example:
 
 ```rust
-use std::num::NonZeroUsize;
+use std::{error::Error, num::NonZeroUsize};
 use threadance::{AgaveBackoff, ThreadPool};
 
-let pool = ThreadPool::builder(
-    NonZeroUsize::new(4).unwrap(),
-    NonZeroUsize::new(256).unwrap(),
-)
-.wake_policy(AgaveBackoff::default())
-.build()?;
+fn main() -> Result<(), Box<dyn Error>> {
+    let worker_count =
+        NonZeroUsize::new(4).expect("the example uses a non-zero worker count");
+    let queue_capacity =
+        NonZeroUsize::new(256).expect("the example uses a non-zero queue capacity");
 
-pool.execute(|| {
-    // CPU-bound work
-})?;
+    let pool = ThreadPool::builder(worker_count, queue_capacity)
+        .wake_policy(AgaveBackoff::default())
+        .build()?;
 
-# Ok::<(), Box<dyn std::error::Error>>(())
+    pool.execute(|| {
+        // CPU-bound work
+    })?;
+
+    Ok(())
+}
 ```
+
+The two builder arguments are the number of worker threads and the capacity of the bounded task queue. `NonZeroUsize` makes zero an invalid configuration at the type level. The literals above are known to be non-zero; applications using runtime configuration should validate those values instead of calling `expect` on unchecked input.
+
+`build()` returns an error if the pool cannot be constructed, for example if a worker thread cannot be spawned. `execute()` returns an error if the pool is disconnected or has been poisoned by a task panic.
 
 The concrete pool type contains the selected components, so normal use relies on static dispatch rather than a strategy `match` in the worker hot path.
 
