@@ -1,25 +1,24 @@
+mod queue;
+mod wake;
+
 use std::{
     fmt, io,
     num::NonZeroUsize,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{Builder, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use crossbeam_channel::{RecvError, SendError, TryRecvError, bounded};
+pub use queue::{CrossbeamMpmc, QueuePop, QueueTopology, TaskConsumer, TaskProducer};
+pub use wake::{AgaveBackoff, CrossbeamWait, SpinThenPark, WaitResult, WakePolicy};
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+pub type Task = Box<dyn FnOnce() + Send + 'static>;
 
 static MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
-// crossbeam_utils::Backoff 0.8.23 constants used by Agave wake-channel.
-const AGAVE_BACKOFF_SPIN_LIMIT: u32 = 6;
-const AGAVE_BACKOFF_YIELD_LIMIT: u32 = 10;
-
-/// Monotonic timestamp used by the wake-characterization utility.
 pub fn monotonic_now_ns() -> u64 {
     MONOTONIC_ORIGIN
         .get_or_init(Instant::now)
@@ -29,28 +28,6 @@ pub fn monotonic_now_ns() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// Strategy used by idle workers while waiting for more work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitStrategy {
-    /// Use Crossbeam's native blocking receive path.
-    Crossbeam,
-
-    /// Stay hot for a fixed duration, then park until work actually arrives.
-    ///
-    /// While hot, the worker does nothing except poll the bounded Crossbeam
-    /// queue and issue a CPU spin hint. Once the duration expires, it moves to
-    /// the futex-backed cold path and does not start another spin period until
-    /// it has received and executed a job.
-    SpinThenPark(Duration),
-
-    /// Use the fixed iteration-based backoff policy from Agave wake-channel.
-    AgaveBackoff,
-}
-
-/// Snapshot of optional Threadance wait-path instrumentation.
-///
-/// Instrumentation is disabled by default and exists only for the small wake
-/// characterization utility.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WaitStatsSnapshot {
     pub empty_observations: u64,
@@ -80,267 +57,122 @@ impl WaitStats {
     }
 }
 
-/// Futex-backed event used only after a worker has left the hot spin path.
-///
-/// A receiver snapshots `cookie`, registers itself as a waiter, and executes a
-/// second `try_recv()` before sleeping. The paired sequentially-consistent
-/// fences guarantee that either the receiver observes a concurrently enqueued
-/// job on that recheck or the sender observes the registered waiter and wakes
-/// it. This avoids the lost-wakeup window without a mutex.
 #[derive(Default)]
-struct WakeEvent {
-    cookie: AtomicU32,
-    waiters: AtomicUsize,
-    sleeping_waiters: AtomicUsize,
+struct Shared {
     stats: WaitStats,
 }
 
-impl WakeEvent {
-    fn register_waiter(&self) -> WakeWaiter<'_> {
-        let cookie = self.cookie.load(Ordering::Relaxed);
-        self.waiters.fetch_add(1, Ordering::Relaxed);
-        fence(Ordering::SeqCst);
-        WakeWaiter {
-            event: self,
-            cookie,
-        }
-    }
-
-    fn wake_one(&self) {
-        fence(Ordering::SeqCst);
-
-        if self.waiters.load(Ordering::Relaxed) != 0 {
-            self.cookie.fetch_add(1, Ordering::Relaxed);
-            atomic_wait::wake_one(&self.cookie);
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn wake_all(&self) {
-        fence(Ordering::SeqCst);
-
-        if self.waiters.load(Ordering::Relaxed) != 0 {
-            self.cookie.fetch_add(1, Ordering::Relaxed);
-            atomic_wait::wake_all(&self.cookie);
-        }
-    }
-
-    fn snapshot(&self) -> WaitStatsSnapshot {
-        WaitStatsSnapshot {
-            empty_observations: self.stats.empty_observations.load(Ordering::Acquire),
-            last_empty_ns: self.stats.last_empty_ns.load(Ordering::Relaxed),
-            sleeping_waiters: self.sleeping_waiters.load(Ordering::Relaxed),
-        }
-    }
+pub struct ThreadPoolBuilder<Q = CrossbeamMpmc, W = CrossbeamWait> {
+    workers: NonZeroUsize,
+    queue_capacity: NonZeroUsize,
+    queue: Q,
+    wake_policy: W,
 }
 
-struct WakeWaiter<'a> {
-    event: &'a WakeEvent,
-    cookie: u32,
-}
-
-impl WakeWaiter<'_> {
-    #[cold]
-    #[inline(never)]
-    fn wait(self) {
-        if self.event.cookie.load(Ordering::Relaxed) != self.cookie {
-            return;
-        }
-
-        self.event.sleeping_waiters.fetch_add(1, Ordering::Relaxed);
-        atomic_wait::wait(&self.event.cookie, self.cookie);
-        self.event.sleeping_waiters.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl Drop for WakeWaiter<'_> {
-    fn drop(&mut self) {
-        self.event.waiters.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-struct Shared {
-    wake_event: WakeEvent,
-}
-
-struct JobSender {
-    inner: Option<crossbeam_channel::Sender<Job>>,
-    shared: Arc<Shared>,
-}
-
-impl JobSender {
-    fn send(&self, value: Job) -> Result<(), SendError<Job>> {
-        self.inner
-            .as_ref()
-            .expect("job sender must be connected")
-            .send(value)?;
-        self.shared.wake_event.wake_one();
-        Ok(())
-    }
-}
-
-impl Drop for JobSender {
-    fn drop(&mut self) {
-        drop(self.inner.take());
-        self.shared.wake_event.wake_all();
-    }
-}
-
-struct JobReceiver {
-    inner: crossbeam_channel::Receiver<Job>,
-    shared: Arc<Shared>,
-}
-
-impl Clone for JobReceiver {
-    fn clone(&self) -> Self {
+impl ThreadPoolBuilder<CrossbeamMpmc, CrossbeamWait> {
+    pub fn new(workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> Self {
         Self {
-            inner: self.inner.clone(),
-            shared: Arc::clone(&self.shared),
+            workers,
+            queue_capacity,
+            queue: CrossbeamMpmc,
+            wake_policy: CrossbeamWait,
         }
     }
 }
 
-impl JobReceiver {
-    fn recv_crossbeam(&self) -> Result<Job, RecvError> {
-        self.inner.recv()
-    }
-
-    fn recv_spin_then_park(&self, spin_duration: Duration) -> Result<Job, RecvError> {
-        let deadline = Instant::now()
-            .checked_add(spin_duration)
-            .expect("worker spin duration is too large");
-        let mut recorded_empty = false;
-
-        loop {
-            match self.inner.try_recv() {
-                Ok(job) => return Ok(job),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => {
-                    if !recorded_empty {
-                        self.shared.wake_event.stats.record_empty();
-                        recorded_empty = true;
-                    }
-
-                    if spin_duration.is_zero() || Instant::now() >= deadline {
-                        return self.recv_parked();
-                    }
-
-                    std::hint::spin_loop();
-                }
-            }
+impl<Q, W> ThreadPoolBuilder<Q, W> {
+    pub fn queue<Q2>(self, queue: Q2) -> ThreadPoolBuilder<Q2, W> {
+        ThreadPoolBuilder {
+            workers: self.workers,
+            queue_capacity: self.queue_capacity,
+            queue,
+            wake_policy: self.wake_policy,
         }
     }
 
-    /// Mirrors Agave wake-channel's receive policy. Agave uses
-    /// `crossbeam_utils::Backoff` 0.8.23: steps 0..=6 issue exponentially
-    /// increasing spin hints, steps 7..=10 call `yield_now()`, and the next
-    /// empty observation moves to the futex-backed waiter protocol.
-    fn recv_agave_backoff(&self) -> Result<Job, RecvError> {
-        loop {
-            let mut step = 0u32;
-
-            loop {
-                match self.inner.try_recv() {
-                    Ok(job) => return Ok(job),
-                    Err(TryRecvError::Disconnected) => return Err(RecvError),
-                    Err(TryRecvError::Empty) if step > AGAVE_BACKOFF_YIELD_LIMIT => break,
-                    Err(TryRecvError::Empty) => {
-                        if step <= AGAVE_BACKOFF_SPIN_LIMIT {
-                            for _ in 0..(1u32 << step) {
-                                std::hint::spin_loop();
-                            }
-                        } else {
-                            std::thread::yield_now();
-                        }
-
-                        if step <= AGAVE_BACKOFF_YIELD_LIMIT {
-                            step += 1;
-                        }
-                    }
-                }
-            }
-
-            let waiter = self.shared.wake_event.register_waiter();
-            match self.inner.try_recv() {
-                Ok(job) => return Ok(job),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => waiter.wait(),
-            }
+    pub fn wake_policy<W2>(self, wake_policy: W2) -> ThreadPoolBuilder<Q, W2> {
+        ThreadPoolBuilder {
+            workers: self.workers,
+            queue_capacity: self.queue_capacity,
+            queue: self.queue,
+            wake_policy,
         }
     }
 
-    /// Cold path: once a worker gives up spinning, keep it cold until it
-    /// actually acquires a job. Spurious or stolen wakes re-park immediately
-    /// instead of starting a fresh spin interval.
-    #[cold]
-    #[inline(never)]
-    fn recv_parked(&self) -> Result<Job, RecvError> {
-        loop {
-            let waiter = self.shared.wake_event.register_waiter();
-            match self.inner.try_recv() {
-                Ok(job) => return Ok(job),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => waiter.wait(),
-            }
-        }
+    pub fn build(self) -> io::Result<ThreadPool<Q, W>>
+    where
+        Q: QueueTopology,
+        W: WakePolicy<Q::Consumer>,
+    {
+        ThreadPool::from_parts(
+            self.workers,
+            self.queue_capacity,
+            self.queue,
+            self.wake_policy,
+        )
     }
 }
 
-fn job_channel(capacity: usize) -> (JobSender, JobReceiver) {
-    let (sender, receiver) = bounded(capacity);
-    let shared = Arc::new(Shared {
-        wake_event: WakeEvent::default(),
-    });
-
-    (
-        JobSender {
-            inner: Some(sender),
-            shared: Arc::clone(&shared),
-        },
-        JobReceiver {
-            inner: receiver,
-            shared,
-        },
-    )
-}
-
-/// Fixed-size thread pool backed by a bounded shared work queue.
-pub struct ThreadPool {
-    job_sender: Option<JobSender>,
+pub struct ThreadPool<Q = CrossbeamMpmc, W = CrossbeamWait>
+where
+    Q: QueueTopology,
+    W: WakePolicy<Q::Consumer>,
+{
+    producer: Option<Q::Producer>,
     shared: Arc<Shared>,
+    wake_policy: Arc<W>,
     worker_handles: Vec<JoinHandle<()>>,
 }
 
-impl ThreadPool {
-    /// Creates a thread pool whose workers use Crossbeam's native blocking
-    /// receive path when the queue is empty.
-    pub fn new(num_workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> io::Result<Self> {
-        Self::with_wait_strategy(num_workers, queue_capacity, WaitStrategy::Crossbeam)
+impl ThreadPool<CrossbeamMpmc, CrossbeamWait> {
+    pub fn builder(
+        workers: NonZeroUsize,
+        queue_capacity: NonZeroUsize,
+    ) -> ThreadPoolBuilder<CrossbeamMpmc, CrossbeamWait> {
+        ThreadPoolBuilder::new(workers, queue_capacity)
     }
 
-    /// Creates a thread pool with an explicitly configured worker wait
-    /// strategy.
-    pub fn with_wait_strategy(
-        num_workers: NonZeroUsize,
+    pub fn new(workers: NonZeroUsize, queue_capacity: NonZeroUsize) -> io::Result<Self> {
+        Self::builder(workers, queue_capacity).build()
+    }
+}
+
+impl<Q, W> ThreadPool<Q, W>
+where
+    Q: QueueTopology,
+    W: WakePolicy<Q::Consumer>,
+{
+    fn from_parts(
+        workers: NonZeroUsize,
         queue_capacity: NonZeroUsize,
-        wait_strategy: WaitStrategy,
+        queue: Q,
+        wake_policy: W,
     ) -> io::Result<Self> {
-        let (job_sender, job_receiver) = job_channel(queue_capacity.get());
-        let shared = Arc::clone(&job_sender.shared);
+        let (producer, consumers) = queue.build(workers, queue_capacity);
+        if consumers.len() != workers.get() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "queue topology must create exactly one consumer per worker",
+            ));
+        }
 
-        let mut worker_handles: Vec<JoinHandle<()>> = Vec::with_capacity(num_workers.get());
+        let wake_policy = Arc::new(wake_policy);
+        let shared = Arc::new(Shared::default());
+        let mut worker_handles: Vec<JoinHandle<()>> = Vec::with_capacity(workers.get());
+        let mut producer = Some(producer);
 
-        for index in 0..num_workers.get() {
-            let job_receiver = job_receiver.clone();
+        for (index, consumer) in consumers.into_iter().enumerate() {
+            let worker_wake_policy = Arc::clone(&wake_policy);
+            let shared = Arc::clone(&shared);
 
             let handle = match Builder::new()
                 .name(format!("threadance-{index:02}"))
-                .spawn(move || worker_loop(job_receiver, wait_strategy))
+                .spawn(move || worker_loop(consumer, worker_wake_policy, shared))
             {
                 Ok(handle) => handle,
                 Err(error) => {
-                    drop(job_sender);
+                    drop(producer.take());
+                    wake_policy.wake_all();
 
                     for handle in worker_handles {
                         let _ = handle.join();
@@ -354,66 +186,71 @@ impl ThreadPool {
         }
 
         Ok(Self {
-            job_sender: Some(job_sender),
+            producer,
             shared,
+            wake_policy,
             worker_handles,
         })
     }
 
-    /// Enables or disables lightweight wait-path instrumentation.
     pub fn set_wait_instrumentation(&self, enabled: bool) {
-        self.shared
-            .wake_event
-            .stats
-            .enabled
-            .store(enabled, Ordering::Relaxed);
+        self.shared.stats.enabled.store(enabled, Ordering::Relaxed);
     }
 
     pub fn reset_wait_stats(&self) {
-        self.shared.wake_event.stats.reset();
+        self.shared.stats.reset();
     }
 
     pub fn wait_stats(&self) -> WaitStatsSnapshot {
-        self.shared.wake_event.snapshot()
+        WaitStatsSnapshot {
+            empty_observations: self.shared.stats.empty_observations.load(Ordering::Acquire),
+            last_empty_ns: self.shared.stats.last_empty_ns.load(Ordering::Relaxed),
+            sleeping_waiters: self.wake_policy.sleeping_waiters(),
+        }
     }
 
-    /// Submits one job to the pool.
-    ///
-    /// This call blocks when the bounded job queue is full until space becomes
-    /// available.
-    pub fn execute<F>(&self, job: F) -> Result<(), ExecuteError>
+    pub fn execute<F>(&self, task: F) -> Result<(), ExecuteError>
     where
         F: FnOnce() + Send + 'static,
     {
-        let sender = self.job_sender.as_ref().ok_or(ExecuteError::Disconnected)?;
-
-        sender
-            .send(Box::new(job))
-            .map_err(|_| ExecuteError::Disconnected)
+        let producer = self.producer.as_ref().ok_or(ExecuteError::Disconnected)?;
+        producer
+            .push(Box::new(task))
+            .map_err(|_| ExecuteError::Disconnected)?;
+        self.wake_policy.wake_one();
+        Ok(())
     }
 }
 
-fn worker_loop(receiver: JobReceiver, wait_strategy: WaitStrategy) {
-    while let Some(job) = receive_job(&receiver, wait_strategy) {
-        job();
-    }
-}
-
-fn receive_job(receiver: &JobReceiver, wait_strategy: WaitStrategy) -> Option<Job> {
-    match wait_strategy {
-        WaitStrategy::Crossbeam => receiver.recv_crossbeam().ok(),
-        WaitStrategy::SpinThenPark(spin_duration) => {
-            receiver.recv_spin_then_park(spin_duration).ok()
+#[inline]
+fn worker_loop<C, W>(consumer: C, wake_policy: Arc<W>, shared: Arc<Shared>)
+where
+    C: TaskConsumer,
+    W: WakePolicy<C>,
+{
+    loop {
+        match consumer.try_pop() {
+            QueuePop::Item(task) => task(),
+            QueuePop::Disconnected => return,
+            QueuePop::Empty => {
+                shared.stats.record_empty();
+                match wake_policy.wait(&consumer) {
+                    WaitResult::Task(task) => task(),
+                    WaitResult::Disconnected => return,
+                }
+            }
         }
-        WaitStrategy::AgaveBackoff => receiver.recv_agave_backoff().ok(),
     }
 }
 
-impl Drop for ThreadPool {
+impl<Q, W> Drop for ThreadPool<Q, W>
+where
+    Q: QueueTopology,
+    W: WakePolicy<Q::Consumer>,
+{
     fn drop(&mut self) {
-        // Disconnect the job channel first, then wake every parked worker so
-        // each receiver can observe the disconnected queue before we join it.
-        drop(self.job_sender.take());
+        drop(self.producer.take());
+        self.wake_policy.wake_all();
 
         for handle in self.worker_handles.drain(..) {
             let _ = handle.join();
@@ -448,21 +285,26 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{ThreadPool, WaitStrategy, WakeEvent};
+    use super::{
+        AgaveBackoff, CrossbeamMpmc, CrossbeamWait, QueuePop, SpinThenPark, TaskConsumer,
+        ThreadPool, WaitResult, WakePolicy,
+    };
 
-    fn assert_executes(wait_strategy: WaitStrategy) {
-        let pool = ThreadPool::with_wait_strategy(
+    fn assert_executes<W>(wake_policy: W)
+    where
+        W: WakePolicy<<CrossbeamMpmc as super::QueueTopology>::Consumer>,
+    {
+        let pool = ThreadPool::builder(
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(16).unwrap(),
-            wait_strategy,
         )
+        .wake_policy(wake_policy)
+        .build()
         .unwrap();
 
         let counter = Arc::new(AtomicUsize::new(0));
-
         for _ in 0..100 {
-            let counter = counter.clone();
-
+            let counter = Arc::clone(&counter);
             pool.execute(move || {
                 counter.fetch_add(1, Ordering::Relaxed);
             })
@@ -470,46 +312,54 @@ mod tests {
         }
 
         drop(pool);
-
         assert_eq!(counter.load(Ordering::Relaxed), 100);
     }
 
     #[test]
-    fn executes_submitted_jobs_with_crossbeam_waker() {
-        assert_executes(WaitStrategy::Crossbeam);
+    fn crossbeam_wait_executes_submitted_jobs() {
+        assert_executes(CrossbeamWait);
     }
 
     #[test]
     fn spin_then_park_executes_submitted_jobs() {
-        assert_executes(WaitStrategy::SpinThenPark(Duration::from_micros(50)));
+        assert_executes(SpinThenPark::new(Duration::from_micros(50)));
     }
 
     #[test]
     fn agave_backoff_executes_submitted_jobs() {
-        assert_executes(WaitStrategy::AgaveBackoff);
+        assert_executes(AgaveBackoff::default());
+    }
+
+    #[derive(Default)]
+    struct YieldUntilReady;
+
+    impl<C: TaskConsumer> WakePolicy<C> for YieldUntilReady {
+        fn wait(&self, consumer: &C) -> WaitResult {
+            loop {
+                match consumer.try_pop() {
+                    QueuePop::Item(task) => return WaitResult::Task(task),
+                    QueuePop::Disconnected => return WaitResult::Disconnected,
+                    QueuePop::Empty => thread::yield_now(),
+                }
+            }
+        }
+
+        fn wake_one(&self) {}
+        fn wake_all(&self) {}
     }
 
     #[test]
-    fn immediate_park_executes_submitted_jobs() {
-        assert_executes(WaitStrategy::SpinThenPark(Duration::ZERO));
-    }
-
-    #[test]
-    fn wake_before_wait_does_not_block() {
-        let event = WakeEvent::default();
-        let waiter = event.register_waiter();
-        event.wake_one();
-        waiter.wait();
+    fn custom_wake_policy_can_be_supplied() {
+        assert_executes(YieldUntilReady);
     }
 
     #[test]
     fn parked_worker_is_woken_for_new_work() {
-        let pool = ThreadPool::with_wait_strategy(
-            NonZeroUsize::new(1).unwrap(),
-            NonZeroUsize::new(4).unwrap(),
-            WaitStrategy::SpinThenPark(Duration::ZERO),
-        )
-        .unwrap();
+        let pool =
+            ThreadPool::builder(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(4).unwrap())
+                .wake_policy(SpinThenPark::new(Duration::ZERO))
+                .build()
+                .unwrap();
         pool.set_wait_instrumentation(true);
         pool.reset_wait_stats();
 

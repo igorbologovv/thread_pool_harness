@@ -6,10 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use threadance::{ThreadPool, WaitStrategy, monotonic_now_ns};
+use threadance::{CrossbeamMpmc, SpinThenPark, ThreadPool, monotonic_now_ns};
 
 const DEFAULT_GAPS_US: &[u64] = &[5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 100];
 const DEFAULT_ITERATIONS: usize = 200;
+
+type CharacterizationPool = ThreadPool<CrossbeamMpmc, SpinThenPark>;
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -68,18 +70,14 @@ struct ResultRow {
 fn characterize(spin_us: u64, gap_us: u64, iterations: usize) -> ResultRow {
     assert!(iterations > 0);
 
-    let pool = ThreadPool::with_wait_strategy(
-        NonZeroUsize::new(1).unwrap(),
-        NonZeroUsize::new(4).unwrap(),
-        WaitStrategy::SpinThenPark(Duration::from_micros(spin_us)),
-    )
-    .unwrap();
+    let pool = ThreadPool::builder(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(4).unwrap())
+        .wake_policy(SpinThenPark::new(Duration::from_micros(spin_us)))
+        .build()
+        .unwrap();
 
     pool.set_wait_instrumentation(true);
     pool.reset_wait_stats();
 
-    // Kick the worker once so the measurement loop starts from a known
-    // post-job idle transition rather than from pool construction timing.
     let (warmup_tx, warmup_rx) = mpsc::sync_channel(1);
     pool.execute(move || warmup_tx.send(()).unwrap()).unwrap();
     warmup_rx.recv().unwrap();
@@ -90,10 +88,6 @@ fn characterize(spin_us: u64, gap_us: u64, iterations: usize) -> ResultRow {
     let mut latencies_ns = Vec::with_capacity(iterations);
 
     for _ in 0..iterations {
-        // The worker timestamps the first Empty it observes. Pace relative to
-        // that timestamp, not relative to when this producer thread notices
-        // the observation, otherwise producer scheduling delay would inflate
-        // the requested microsecond gap.
         let target_ns = empty
             .timestamp_ns
             .saturating_add(gap_us.saturating_mul(1_000));
@@ -137,7 +131,7 @@ struct EmptyObservation {
     timestamp_ns: u64,
 }
 
-fn wait_for_next_empty(pool: &ThreadPool, previous: u64) -> EmptyObservation {
+fn wait_for_next_empty(pool: &CharacterizationPool, previous: u64) -> EmptyObservation {
     let deadline = Instant::now() + Duration::from_secs(1);
 
     loop {
