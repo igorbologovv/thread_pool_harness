@@ -4,6 +4,7 @@ mod wake;
 use std::{
     fmt, io,
     num::NonZeroUsize,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -60,6 +61,7 @@ impl WaitStats {
 #[derive(Default)]
 struct Shared {
     stats: WaitStats,
+    poisoned: AtomicBool,
 }
 
 pub struct ThreadPoolBuilder<Q = CrossbeamMpmc, W = CrossbeamWait> {
@@ -75,7 +77,7 @@ impl ThreadPoolBuilder<CrossbeamMpmc, CrossbeamWait> {
             workers,
             queue_capacity,
             queue: CrossbeamMpmc,
-            wake_policy: CrossbeamWait,
+            wake_policy: CrossbeamWait::default(),
         }
     }
 }
@@ -209,17 +211,49 @@ where
         }
     }
 
+    pub fn is_poisoned(&self) -> bool {
+        self.shared.poisoned.load(Ordering::Acquire)
+    }
+
     pub fn execute<F>(&self, task: F) -> Result<(), ExecuteError>
     where
         F: FnOnce() + Send + 'static,
     {
+        if self.is_poisoned() {
+            return Err(ExecuteError::Poisoned);
+        }
+
         let producer = self.producer.as_ref().ok_or(ExecuteError::Disconnected)?;
-        producer
-            .push(Box::new(task))
-            .map_err(|_| ExecuteError::Disconnected)?;
+        if producer.push(Box::new(task)).is_err() {
+            return Err(if self.is_poisoned() {
+                ExecuteError::Poisoned
+            } else {
+                ExecuteError::Disconnected
+            });
+        }
+
+        if self.is_poisoned() {
+            return Err(ExecuteError::Poisoned);
+        }
+
         self.wake_policy.wake_one();
         Ok(())
     }
+}
+
+#[inline]
+fn run_task<C, W>(task: Task, wake_policy: &W, shared: &Shared) -> bool
+where
+    C: TaskConsumer,
+    W: WakePolicy<C>,
+{
+    if catch_unwind(AssertUnwindSafe(task)).is_ok() {
+        return true;
+    }
+
+    shared.poisoned.store(true, Ordering::Release);
+    wake_policy.wake_all();
+    false
 }
 
 #[inline]
@@ -229,14 +263,29 @@ where
     W: WakePolicy<C>,
 {
     loop {
+        if shared.poisoned.load(Ordering::Acquire) {
+            return;
+        }
+
         match consumer.try_pop() {
-            QueuePop::Item(task) => task(),
+            QueuePop::Item(task) => {
+                if !run_task::<C, W>(task, wake_policy.as_ref(), shared.as_ref()) {
+                    return;
+                }
+            }
             QueuePop::Disconnected => return,
             QueuePop::Empty => {
                 shared.stats.record_empty();
                 match wake_policy.wait(&consumer) {
-                    WaitResult::Task(task) => task(),
-                    WaitResult::Disconnected => return,
+                    WaitResult::Task(task) => {
+                        if shared.poisoned.load(Ordering::Acquire) {
+                            return;
+                        }
+                        if !run_task::<C, W>(task, wake_policy.as_ref(), shared.as_ref()) {
+                            return;
+                        }
+                    }
+                    WaitResult::Disconnected | WaitResult::Interrupted => return,
                 }
             }
         }
@@ -261,12 +310,14 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecuteError {
     Disconnected,
+    Poisoned,
 }
 
 impl fmt::Display for ExecuteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disconnected => f.write_str("thread pool is disconnected"),
+            Self::Poisoned => f.write_str("thread pool is poisoned because a task panicked"),
         }
     }
 }
@@ -286,8 +337,8 @@ mod tests {
     };
 
     use super::{
-        AgaveBackoff, CrossbeamMpmc, CrossbeamWait, QueuePop, SpinThenPark, TaskConsumer,
-        ThreadPool, WaitResult, WakePolicy,
+        AgaveBackoff, CrossbeamMpmc, CrossbeamWait, ExecuteError, QueuePop, SpinThenPark,
+        TaskConsumer, ThreadPool, WaitResult, WakePolicy,
     };
 
     fn assert_executes<W>(wake_policy: W)
@@ -317,7 +368,7 @@ mod tests {
 
     #[test]
     fn crossbeam_wait_executes_submitted_jobs() {
-        assert_executes(CrossbeamWait);
+        assert_executes(CrossbeamWait::default());
     }
 
     #[test]
@@ -381,5 +432,44 @@ mod tests {
             assert!(Instant::now() < deadline, "sleeping worker was not woken");
             thread::yield_now();
         }
+    }
+
+    fn assert_task_panic_poisons_pool<W>(wake_policy: W)
+    where
+        W: WakePolicy<<CrossbeamMpmc as super::QueueTopology>::Consumer>,
+    {
+        let pool = ThreadPool::builder(
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(16).unwrap(),
+        )
+        .wake_policy(wake_policy)
+        .build()
+        .unwrap();
+
+        pool.execute(|| panic!("intentional task panic")).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !pool.is_poisoned() {
+            assert!(Instant::now() < deadline, "pool was not poisoned after task panic");
+            thread::yield_now();
+        }
+
+        assert_eq!(pool.execute(|| {}), Err(ExecuteError::Poisoned));
+        drop(pool);
+    }
+
+    #[test]
+    fn task_panic_poisons_crossbeam_wait_pool() {
+        assert_task_panic_poisons_pool(CrossbeamWait::default());
+    }
+
+    #[test]
+    fn task_panic_poisons_spin_then_park_pool() {
+        assert_task_panic_poisons_pool(SpinThenPark::new(Duration::ZERO));
+    }
+
+    #[test]
+    fn task_panic_poisons_agave_backoff_pool() {
+        assert_task_panic_poisons_pool(AgaveBackoff::default());
     }
 }
