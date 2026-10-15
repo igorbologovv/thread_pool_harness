@@ -13,6 +13,15 @@ use crate::{
     queue::{CrossbeamConsumer, QueuePop, TaskConsumer},
 };
 
+// The Agave-style backoff and WakeEvent/Waiter protocol below are adapted from
+// Anza Agave. Alessandro Decina introduced the futex wake path in commit
+// 0fbaa230531807f4af65b92e24b44d69d86f3cc3; Dmitry Adamushko later extracted
+// it into `agave-wake-channel` in commit
+// 25f128d0fcb1735e8b1f31b5f2083fdd28c11df8 without changing behavior.
+// Original work is Apache-2.0 licensed. See ../THIRD_PARTY_NOTICES.md.
+// Threadance decouples the protocol from Agave's channel wrapper through
+// TaskConsumer/WakePolicy and adds shutdown handling and wait instrumentation.
+//
 // crossbeam_utils::Backoff 0.8.23 constants used by Agave wake-channel.
 const AGAVE_BACKOFF_SPIN_LIMIT: u32 = 6;
 const AGAVE_BACKOFF_YIELD_LIMIT: u32 = 10;
