@@ -330,7 +330,7 @@ mod tests {
         num::NonZeroUsize,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
         time::{Duration, Instant},
@@ -382,11 +382,17 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct YieldUntilReady;
+    struct YieldUntilReady {
+        shutdown: AtomicBool,
+    }
 
     impl<C: TaskConsumer> WakePolicy<C> for YieldUntilReady {
         fn wait(&self, consumer: &C) -> WaitResult {
             loop {
+                if self.shutdown.load(Ordering::Acquire) {
+                    return WaitResult::Interrupted;
+                }
+
                 match consumer.try_pop() {
                     QueuePop::Item(task) => return WaitResult::Task(task),
                     QueuePop::Disconnected => return WaitResult::Disconnected,
@@ -396,12 +402,15 @@ mod tests {
         }
 
         fn wake_one(&self) {}
-        fn wake_all(&self) {}
+
+        fn wake_all(&self) {
+            self.shutdown.store(true, Ordering::Release);
+        }
     }
 
     #[test]
     fn custom_wake_policy_can_be_supplied() {
-        assert_executes(YieldUntilReady);
+        assert_executes(YieldUntilReady::default());
     }
 
     #[test]
@@ -450,7 +459,10 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(1);
         while !pool.is_poisoned() {
-            assert!(Instant::now() < deadline, "pool was not poisoned after task panic");
+            assert!(
+                Instant::now() < deadline,
+                "pool was not poisoned after task panic"
+            );
             thread::yield_now();
         }
 
