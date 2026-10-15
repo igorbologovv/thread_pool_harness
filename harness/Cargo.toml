@@ -13,4 +13,4 @@ rayon = "1.12.0"
 rusqlite = "0.40.2"
 serde_json = "1.0.151"
 solana-bls-signatures = "4.0.0"
-threadance = { version = "0.1.0", path = "../threadance" }
+threadance = "0.0.1"

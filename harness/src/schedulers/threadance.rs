@@ -1,6 +1,6 @@
 use std::{io, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use ::threadance::{ThreadPool, WaitStrategy};
+use ::threadance::{AgaveBackoff, CrossbeamMpmc, ExecuteError, SpinThenPark, ThreadPool};
 
 use crate::{
     delivery::{DeliverySchedule, run_with_delivery},
@@ -9,8 +9,28 @@ use crate::{
     workload::Workload,
 };
 
+type SpinPool = ThreadPool<CrossbeamMpmc, SpinThenPark>;
+type AgavePool = ThreadPool<CrossbeamMpmc, AgaveBackoff>;
+
+enum ThreadancePool {
+    Spin(SpinPool),
+    Agave(AgavePool),
+}
+
+impl ThreadancePool {
+    fn execute<F>(&self, task: F) -> Result<(), ExecuteError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match self {
+            Self::Spin(pool) => pool.execute(task),
+            Self::Agave(pool) => pool.execute(task),
+        }
+    }
+}
+
 pub struct ThreadanceScheduler {
-    pool: ThreadPool,
+    pool: ThreadancePool,
 }
 
 impl ThreadanceScheduler {
@@ -19,20 +39,26 @@ impl ThreadanceScheduler {
         queue_capacity: NonZeroUsize,
         spin_us: u64,
     ) -> io::Result<Self> {
-        let wait_strategy = WaitStrategy::SpinThenPark(Duration::from_micros(spin_us));
-        let pool = ThreadPool::with_wait_strategy(workers, queue_capacity, wait_strategy)?;
+        let pool = ThreadPool::builder(workers, queue_capacity)
+            .wake_policy(SpinThenPark::new(Duration::from_micros(spin_us)))
+            .build()?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool: ThreadancePool::Spin(pool),
+        })
     }
 
     pub fn new_agave_backoff(
         workers: NonZeroUsize,
         queue_capacity: NonZeroUsize,
     ) -> io::Result<Self> {
-        let pool =
-            ThreadPool::with_wait_strategy(workers, queue_capacity, WaitStrategy::AgaveBackoff)?;
+        let pool = ThreadPool::builder(workers, queue_capacity)
+            .wake_policy(AgaveBackoff::default())
+            .build()?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool: ThreadancePool::Agave(pool),
+        })
     }
 }
 
