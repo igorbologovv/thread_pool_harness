@@ -1,0 +1,19 @@
+name: Refresh lockfile artifact
+
+on:
+  push:
+    branches:
+      - threadance-trait-implementation
+
+jobs:
+  refresh-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Refresh Cargo.lock
+        run: cargo update -p threadance --precise 0.0.1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refreshed-cargo-lock
+          path: Cargo.lock
