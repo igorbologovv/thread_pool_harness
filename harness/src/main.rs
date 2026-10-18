@@ -20,7 +20,11 @@ use delivery::DeliverySchedule;
 use perf_control::DEEP_PASSES;
 use runner::{RepeatedRunOutput, run_repeated};
 use schedulers::{
-    Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
+    Scheduler,
+    bevy::BevyScheduler,
+    hot_first::{HotFirstScheduler, WaitMode},
+    rayon::RayonScheduler,
+    threadance::ThreadanceScheduler,
 };
 use storage::sqlite::BenchmarkDb;
 use summary::RunSummary;
@@ -131,6 +135,23 @@ where
         SchedulerKind::Bevy => {
             let scheduler = BevyScheduler::new(cli.workers);
 
+            run_benchmark(cli, &scheduler, workload, delivery)
+        }
+
+        SchedulerKind::ThreadanceHotFirst => {
+            let mode = match cli.threadance_wait_policy {
+                ThreadanceWaitPolicy::SpinThenPark => {
+                    WaitMode::SpinThenPark(std::time::Duration::from_micros(cli.threadance_spin_us))
+                }
+                ThreadanceWaitPolicy::AgaveBackoff => WaitMode::AgaveBackoff,
+            };
+            let scheduler = HotFirstScheduler::new(
+                cli.workers,
+                cli.queue_capacity,
+                cli.hot_first_backlog,
+                mode,
+            )
+            .expect("failed to create hot-first thread pool");
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 

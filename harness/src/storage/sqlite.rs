@@ -154,19 +154,33 @@ impl BenchmarkDb {
         let measured_runs = usize_to_i64(cli.runs.get(), "measured_runs")?;
 
         let (queue_capacity, threadance_wait_policy, threadance_spin_us) = match cli.scheduler {
-            SchedulerKind::Threadance => match cli.threadance_wait_policy {
-                ThreadanceWaitPolicy::SpinThenPark => (
-                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                    Some("spin-then-park"),
-                    Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
-                ),
-                ThreadanceWaitPolicy::AgaveBackoff => (
-                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                    Some("agave-backoff"),
-                    None,
-                ),
-            },
+            SchedulerKind::Threadance | SchedulerKind::ThreadanceHotFirst => {
+                match cli.threadance_wait_policy {
+                    ThreadanceWaitPolicy::SpinThenPark => (
+                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                        Some("spin-then-park"),
+                        Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
+                    ),
+                    ThreadanceWaitPolicy::AgaveBackoff => (
+                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                        Some("agave-backoff"),
+                        None,
+                    ),
+                }
+            }
             SchedulerKind::Rayon | SchedulerKind::Bevy => (None, None, None),
+        };
+
+        // Experimental configuration is persisted without schema migration.
+        let extra_config_json = match cli.scheduler {
+            SchedulerKind::ThreadanceHotFirst => Some(
+                serde_json::json!({
+                    "hot_first_backlog": cli.hot_first_backlog,
+                    "hot_first_slots_per_worker": cli.hot_first_backlog + 1,
+                })
+                .to_string(),
+            ),
+            _ => None,
         };
 
         let delivery_mode = cli.delivery_mode();
@@ -251,7 +265,7 @@ impl BenchmarkDb {
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15,
                 ?16, ?17, ?18, ?19, ?20,
-                ?21, NULL, NULL
+                ?21, ?22, NULL
             )
             ",
             params![
@@ -276,6 +290,7 @@ impl BenchmarkDb {
                 signers_per_certificate,
                 certificates_per_work_unit,
                 command_line,
+                extra_config_json,
             ],
         )?;
 
@@ -755,6 +770,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
         SchedulerKind::Rayon => "rayon",
         SchedulerKind::Bevy => "bevy",
         SchedulerKind::Threadance => "threadance",
+        SchedulerKind::ThreadanceHotFirst => "threadance-hot-first",
     }
 }
 

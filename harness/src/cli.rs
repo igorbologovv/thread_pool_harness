@@ -42,6 +42,12 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "spin-then-park")]
     pub threadance_wait_policy: ThreadanceWaitPolicy,
 
+    /// Maximum waiting backlog per worker in the experimental hot-first pool.
+    /// Zero means one in-flight task and no waiting task per worker.
+    /// Uses workers * (backlog + 1) slots of the global queue capacity.
+    #[arg(long, default_value_t = 8)]
+    pub hot_first_backlog: usize,
+
     /// Time a Threadance worker actively polls an empty queue before blocking.
     ///
     /// Zero means immediate blocking. Used only by
@@ -203,6 +209,7 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
+    ThreadanceHotFirst,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

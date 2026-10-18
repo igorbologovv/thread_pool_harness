@@ -5,6 +5,7 @@
 //! workload-specific processing logic.
 
 pub mod bevy;
+pub mod hot_first;
 pub mod rayon;
 pub mod threadance;
 
@@ -29,7 +30,11 @@ mod tests {
     };
 
     use super::{
-        Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
+        Scheduler,
+        bevy::BevyScheduler,
+        hot_first::{HotFirstScheduler, WaitMode},
+        rayon::RayonScheduler,
+        threadance::ThreadanceScheduler,
     };
     use crate::{
         delivery::{DeliveryMode, DeliverySchedule},
@@ -97,6 +102,18 @@ mod tests {
 
         assert_eq!(result.completed_work_units, WORK_UNITS as u64);
         workload.assert_exactly_once();
+    }
+
+    #[test]
+    fn hot_first_executes_every_work_unit_once() {
+        let scheduler = HotFirstScheduler::new(
+            NonZeroUsize::new(WORKERS).unwrap(),
+            NonZeroUsize::new(WORK_UNITS).unwrap(),
+            2,
+            WaitMode::SpinThenPark(Duration::ZERO),
+        )
+        .unwrap();
+        verify(&scheduler);
     }
 
     #[test]
