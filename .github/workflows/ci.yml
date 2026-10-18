@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout experimental Threadance dependency
+        run: git clone --depth 1 --branch experiment/unstable https://github.com/igorbologovv/threadance.git ../threadance
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y sqlite3
 

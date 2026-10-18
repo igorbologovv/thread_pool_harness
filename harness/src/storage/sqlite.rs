@@ -154,19 +154,46 @@ impl BenchmarkDb {
         let measured_runs = usize_to_i64(cli.runs.get(), "measured_runs")?;
 
         let (queue_capacity, threadance_wait_policy, threadance_spin_us) = match cli.scheduler {
-            SchedulerKind::Threadance => match cli.threadance_wait_policy {
-                ThreadanceWaitPolicy::SpinThenPark => (
-                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                    Some("spin-then-park"),
-                    Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
-                ),
-                ThreadanceWaitPolicy::AgaveBackoff => (
-                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                    Some("agave-backoff"),
-                    None,
-                ),
-            },
+            SchedulerKind::Threadance | SchedulerKind::ThreadanceHotFirst => {
+                match cli.threadance_wait_policy {
+                    ThreadanceWaitPolicy::SpinThenPark => (
+                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                        Some("spin-then-park"),
+                        Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
+                    ),
+                    ThreadanceWaitPolicy::AgaveBackoff => (
+                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                        Some("agave-backoff"),
+                        None,
+                    ),
+                }
+            }
             SchedulerKind::Rayon | SchedulerKind::Bevy => (None, None, None),
+        };
+
+        // Persist experimental routing parameters and dependency identity.
+        let extra_config_json = match cli.scheduler {
+            SchedulerKind::ThreadanceHotFirst => {
+                let local_threadance =
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../threadance");
+                Some(
+                    serde_json::json!({
+                        "hot_first_backlog": cli.hot_first_backlog,
+                        "ring_slots_per_worker": cli.hot_first_backlog,
+                        "threadance_git_commit": git_output(
+                            &local_threadance,
+                            &["rev-parse", "HEAD"],
+                        ),
+                        "threadance_git_dirty": git_output(
+                            &local_threadance,
+                            &["status", "--porcelain"],
+                        )
+                        .is_some_and(|output| !output.is_empty()),
+                    })
+                    .to_string(),
+                )
+            }
+            _ => None,
         };
 
         let delivery_mode = cli.delivery_mode();
@@ -251,7 +278,7 @@ impl BenchmarkDb {
                 ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15,
                 ?16, ?17, ?18, ?19, ?20,
-                ?21, NULL, NULL
+                ?21, ?22, NULL
             )
             ",
             params![
@@ -276,6 +303,7 @@ impl BenchmarkDb {
                 signers_per_certificate,
                 certificates_per_work_unit,
                 command_line,
+                extra_config_json,
             ],
         )?;
 
@@ -755,6 +783,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
         SchedulerKind::Rayon => "rayon",
         SchedulerKind::Bevy => "bevy",
         SchedulerKind::Threadance => "threadance",
+        SchedulerKind::ThreadanceHotFirst => "threadance-hot-first",
     }
 }
 

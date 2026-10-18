@@ -42,6 +42,11 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "spin-then-park")]
     pub threadance_wait_policy: ThreadanceWaitPolicy,
 
+    /// Waiting task slots per Hot-first SPSC segment.
+    /// Zero needs a separate direct-handoff protocol and is rejected.
+    #[arg(long, default_value_t = 1)]
+    pub hot_first_backlog: usize,
+
     /// Time a Threadance worker actively polls an empty queue before blocking.
     ///
     /// Zero means immediate blocking. Used only by
@@ -203,6 +208,7 @@ pub enum SchedulerKind {
     Rayon,
     Bevy,
     Threadance,
+    ThreadanceHotFirst,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

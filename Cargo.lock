@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "threadance"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "atomic-wait",
  "crossbeam-channel",
@@ -1266,6 +1266,7 @@ dependencies = [
 name = "threadance-harness"
 version = "0.1.0"
 dependencies = [
+ "atomic-wait",
  "bevy_tasks",
  "clap",
  "libc",

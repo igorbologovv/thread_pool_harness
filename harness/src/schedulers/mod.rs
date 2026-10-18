@@ -5,6 +5,7 @@
 //! workload-specific processing logic.
 
 pub mod bevy;
+pub mod gate_ring;
 pub mod rayon;
 pub mod threadance;
 
@@ -29,7 +30,8 @@ mod tests {
     };
 
     use super::{
-        Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
+        Scheduler, bevy::BevyScheduler, gate_ring::GateScheduler, rayon::RayonScheduler,
+        threadance::ThreadanceScheduler,
     };
     use crate::{
         delivery::{DeliveryMode, DeliverySchedule},
@@ -97,6 +99,19 @@ mod tests {
 
         assert_eq!(result.completed_work_units, WORK_UNITS as u64);
         workload.assert_exactly_once();
+    }
+
+    #[test]
+    fn segmented_gate_executes_every_work_unit_once() {
+        let scheduler = GateScheduler::new(
+            NonZeroUsize::new(WORKERS).unwrap(),
+            NonZeroUsize::new(WORK_UNITS).unwrap(),
+            2,
+            ::threadance::SegmentedIdle::SpinThenPark(Duration::ZERO),
+        )
+        .unwrap();
+
+        verify(&scheduler);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::{
 };
 
 use rand::{RngExt, SeedableRng, rngs::StdRng, seq::SliceRandom};
+use rayon::prelude::*;
 use solana_bls_signatures::{
     keypair::Keypair,
     pubkey::{PopVerified, PubkeyAffine, PubkeyProjective, VerifySignature},
@@ -218,16 +219,23 @@ fn generate_dataset(
 
     let validator_pubkeys = keypairs.iter().map(|keypair| keypair.public).collect();
 
-    let inputs = (0..total_certificates)
+    // Preserve the original RNG stream and cached-dataset format. Generating
+    // signer sets is cheap compared to signing; only the expensive signing
+    // and aggregation stage needs parallel execution.
+    let certificate_inputs: Vec<_> = (0..total_certificates)
         .map(|_| {
             let payload = rng.random::<[u8; 32]>();
-
             let mut signer_indices: Vec<usize> = (0..config.validators).collect();
-
             signer_indices.shuffle(&mut rng);
             signer_indices.truncate(config.signers_per_certificate);
             signer_indices.sort_unstable();
+            (payload, signer_indices)
+        })
+        .collect();
 
+    let inputs = certificate_inputs
+        .into_par_iter()
+        .map(|(payload, signer_indices)| {
             let signatures: Vec<SignatureProjective> = signer_indices
                 .iter()
                 .map(|&index| keypairs[index].sign(&payload))
@@ -507,6 +515,37 @@ mod tests {
 
         for unit in workload.work_units() {
             workload.execute(unit);
+        }
+    }
+
+    #[test]
+    fn parallel_generation_is_deterministic_across_worker_counts() {
+        let common = CommonWorkloadConfig {
+            work_units: 12,
+            seed: 1234,
+        };
+        let config = BlsAggregateVerifyConfig {
+            validators: 16,
+            signers_per_certificate: 10,
+            certificates_per_work_unit: 2,
+        };
+
+        let generate = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| BlsAggregateVerifyWorkload::generate(&common, &config))
+        };
+
+        let single = generate(1);
+        let parallel = generate(4);
+        assert_eq!(single.inputs.len(), parallel.inputs.len());
+
+        for (a, b) in single.inputs.iter().zip(&parallel.inputs) {
+            assert_eq!(a.payload, b.payload);
+            assert_eq!(a.signature.0, b.signature.0);
+            assert_eq!(a.signer_indices, b.signer_indices);
         }
     }
 

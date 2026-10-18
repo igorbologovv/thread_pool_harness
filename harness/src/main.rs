@@ -20,7 +20,8 @@ use delivery::DeliverySchedule;
 use perf_control::DEEP_PASSES;
 use runner::{RepeatedRunOutput, run_repeated};
 use schedulers::{
-    Scheduler, bevy::BevyScheduler, rayon::RayonScheduler, threadance::ThreadanceScheduler,
+    Scheduler, bevy::BevyScheduler, gate_ring::GateScheduler, rayon::RayonScheduler,
+    threadance::ThreadanceScheduler,
 };
 use storage::sqlite::BenchmarkDb;
 use summary::RunSummary;
@@ -131,6 +132,19 @@ where
         SchedulerKind::Bevy => {
             let scheduler = BevyScheduler::new(cli.workers);
 
+            run_benchmark(cli, &scheduler, workload, delivery)
+        }
+
+        SchedulerKind::ThreadanceHotFirst => {
+            let idle = match cli.threadance_wait_policy {
+                ThreadanceWaitPolicy::SpinThenPark => ::threadance::SegmentedIdle::SpinThenPark(
+                    std::time::Duration::from_micros(cli.threadance_spin_us),
+                ),
+                ThreadanceWaitPolicy::AgaveBackoff => ::threadance::SegmentedIdle::AgaveBackoff,
+            };
+            let scheduler =
+                GateScheduler::new(cli.workers, cli.queue_capacity, cli.hot_first_backlog, idle)
+                    .expect("failed to create segmented gate ring");
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 
