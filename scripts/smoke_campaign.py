@@ -11,7 +11,7 @@ experiment = Path("experiments/smoke/experiment.toml")
 
 
 def run(*args: str) -> None:
-    subprocess.run([sys.executable, "experiments/common/campaign.py",
+    subprocess.run([sys.executable, "-m", "experiments.common.campaign",
                     *args, "--experiment", str(experiment)], cwd=ROOT, check=True)
 
 
