@@ -1,0 +1,50 @@
+# Blocked replication of the 6000-WU exploratory Hot-first/Rayon comparison.
+# This TOML is the source of truth for the complete campaign.
+# The runner derives six conditions: three schedulers x two arrival rates.
+
+[experiment]
+name = "queue-topology-blocks"
+workload = "bls-aggregate-verify"
+profile = "standard"
+
+[workload]
+workers = 4
+work_units = 1000
+validators = 2000
+signers_per_certificate = 1600
+certificates_per_work_unit = 1
+workload_seed = 1
+queue_capacity = 8
+
+[threadance]
+schedulers = ["threadance-hot-first", "threadance", "rayon"]
+hot_first_backlog = 2
+wait_policy = "spin-then-park"
+spin_us = 40
+
+[delivery]
+mode = "bursty-arrivals"
+arrival_rates = [900.0, 1500.0]
+arrival_seed_base = 42
+
+[repetitions]
+blocks = 20
+measured_runs_per_block = 2
+warmup_runs_per_block = 1
+
+[randomization]
+seed = 20261019
+
+[execution]
+# A fixed quiet interval, NOT yet a measured system-stability gate.
+settle_seconds = 3.0
+
+[analysis]
+bootstrap_replicates = 10000
+bootstrap_seed = 20261019
+reference_scheduler = "rayon"
+
+[artifacts]
+dataset_cache_dir = "results/datasets"
+calibration_cache_dir = "results/calibrations"
+output_root = "results/queue_topology"
