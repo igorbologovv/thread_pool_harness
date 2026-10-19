@@ -15,11 +15,18 @@ use clap::Parser;
 use workload::{
     CommonWorkloadConfig, Workload,
     bls_aggregate_verify::{BlsAggregateVerifyConfig, BlsAggregateVerifyWorkload},
+    compute_heavy::{ComputeHeavyConfig, ComputeHeavyWorkload},
 };
 
 #[derive(Debug, Parser)]
 #[command(about = "Measure pure single-thread workload service time")]
 struct Cli {
+    #[arg(long, default_value = "bls-aggregate-verify")]
+    workload: String,
+
+    #[arg(long)]
+    operations_per_work_unit: Option<usize>,
+
     #[arg(long, default_value_t = 100)]
     work_units: usize,
 
@@ -108,30 +115,35 @@ fn main() {
         seed: cli.seed,
     };
 
-    let config = BlsAggregateVerifyConfig {
-        validators: cli.validators,
-        signers_per_certificate: cli.signers_per_certificate,
-        certificates_per_work_unit: cli.certificates_per_work_unit,
+    let samples_ns = match cli.workload.as_str() {
+        "bls-aggregate-verify" => {
+            let config = BlsAggregateVerifyConfig {
+                validators: cli.validators,
+                signers_per_certificate: cli.signers_per_certificate,
+                certificates_per_work_unit: cli.certificates_per_work_unit,
+            };
+            let workload = BlsAggregateVerifyWorkload::load_or_generate_cached(
+                &common,
+                &config,
+                &cli.dataset_cache_dir,
+            );
+            measure(&workload, cli.warmup, cli.runs)
+        }
+        "compute-heavy" => {
+            let ops = cli
+                .operations_per_work_unit
+                .expect("--operations-per-work-unit is required for compute-heavy");
+            assert!(ops > 0);
+            let workload = ComputeHeavyWorkload::generate(
+                &common,
+                &ComputeHeavyConfig {
+                    operations_per_work_unit: ops,
+                },
+            );
+            measure(&workload, cli.warmup, cli.runs)
+        }
+        _ => panic!("unsupported workload: {}", cli.workload),
     };
-
-    // Dataset loading/generation is intentionally outside the measured
-    // interval. A cache hit reuses exactly the same dataset bytes.
-    let workload = BlsAggregateVerifyWorkload::load_or_generate_cached(
-        &common,
-        &config,
-        &cli.dataset_cache_dir,
-    );
-
-    for _ in 0..cli.warmup {
-        run_once(&workload);
-    }
-
-    let mut samples_ns = Vec::with_capacity(cli.runs);
-
-    for _ in 0..cli.runs {
-        let elapsed = run_once(&workload);
-        samples_ns.push(elapsed.as_nanos() as f64);
-    }
 
     // Preserve measurement order in samples_ns so temporal drift can
     // be inspected later from the raw calibration data.
@@ -174,4 +186,13 @@ fn main() {
     };
 
     println!("{summary}");
+}
+
+fn measure<W: Workload>(workload: &W, warmup: usize, runs: usize) -> Vec<f64> {
+    for _ in 0..warmup {
+        run_once(workload);
+    }
+    (0..runs)
+        .map(|_| run_once(workload).as_nanos() as f64)
+        .collect()
 }

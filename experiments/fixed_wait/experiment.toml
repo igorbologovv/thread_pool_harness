@@ -1,11 +1,6 @@
-# Final fixed-arrival Threadance wait-policy experiment.
-#
-# This file is the source of truth for the campaign grid and repetition design.
-
 [experiment]
 name = "fixed-wait"
 workload = "bls-aggregate-verify"
-scheduler = "threadance"
 profile = "standard"
 
 [workload]
@@ -21,18 +16,71 @@ queue_capacity = 1000
 mode = "fixed-arrivals"
 rho = [0.25, 0.50, 0.67, 0.80, 0.91, 0.95]
 
-[wait_policy]
-spin_us = [0, 8, 16, 24, 32, 48, 64, 96]
-
 [repetitions]
 blocks = 20
-measured_runs_per_block = 2
 warmup_runs_per_block = 1
+measured_runs_per_block = 2
 
 [randomization]
 seed = 20261007
+
+[execution]
+settle_seconds = 10.0
+
+[analysis]
+reference_configuration = "spin0"
+bootstrap_replicates = 10000
+bootstrap_seed = 20261007
 
 [artifacts]
 dataset_cache_dir = "results/datasets"
 calibration_cache_dir = "results/calibrations"
 output_root = "results/fixed_wait"
+
+[[configurations]]
+id = "spin0"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 0
+
+[[configurations]]
+id = "spin8"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 8
+
+[[configurations]]
+id = "spin16"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 16
+
+[[configurations]]
+id = "spin24"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 24
+
+[[configurations]]
+id = "spin32"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 32
+
+[[configurations]]
+id = "spin48"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 48
+
+[[configurations]]
+id = "spin64"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 64
+
+[[configurations]]
+id = "spin96"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 96

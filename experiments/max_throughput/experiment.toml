@@ -1,9 +1,6 @@
-# Saturated maximum-throughput reference for the BLS workload.
-
 [experiment]
 name = "max-throughput"
 workload = "bls-aggregate-verify"
-scheduler = "threadance"
 profile = "none"
 
 [workload]
@@ -14,12 +11,24 @@ signers_per_certificate = 1600
 certificates_per_work_unit = 1
 workload_seed = 1
 queue_capacity = 1000
-threadance_spin_us = 0
+
+[delivery]
+mode = "all-at-once"
 
 [repetitions]
-warmup_runs = 5
-measured_runs = 30
+blocks = 1
+warmup_runs_per_block = 5
+measured_runs_per_block = 30
+
+[randomization]
+seed = 20261013
 
 [artifacts]
 dataset_cache_dir = "results/datasets"
 output_root = "results/max_throughput"
+
+[[configurations]]
+id = "threadance"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 0

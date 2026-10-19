@@ -38,10 +38,18 @@ jobs:
             experiments/common/validate_calibration.py \
             experiments/common/bls_dataset_identity.py \
             experiments/fixed_wait/run.py \
-            experiments/fixed_wait/campaign.py \
             experiments/fixed_wait/analysis.py \
             experiments/fixed_wait/diagnostics.py \
-            experiments/max_throughput/run.py
+            experiments/max_throughput/run.py \
+            experiments/common/campaign.py \
+            experiments/common/analysis.py \
+            experiments/compute_heavy/run.py \
+            experiments/compute_heavy/analysis.py \
+            experiments/queue_topology/run.py \
+            experiments/queue_topology/analysis.py
+
+      - name: Python campaign tests
+        run: python3 -m unittest discover -s tests -p 'test_campaign.py'
 
       - name: Shell syntax
         run: |

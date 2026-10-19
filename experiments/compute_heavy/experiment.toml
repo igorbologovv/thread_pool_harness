@@ -1,0 +1,59 @@
+[experiment]
+name = "compute-heavy"
+workload = "compute-heavy"
+profile = "standard"
+
+[workload]
+workers = 4
+work_units = 2000
+operations_per_work_unit = 1000
+workload_seed = 1
+queue_capacity = 1024
+
+[delivery]
+mode = "bursty-arrivals"
+rho = [0.50]
+arrival_seed_base = 42
+
+[repetitions]
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+
+[randomization]
+seed = 20261019
+
+[execution]
+settle_seconds = 3.0
+
+[analysis]
+reference_configuration = "crossbeam-agave"
+bootstrap_replicates = 10000
+bootstrap_seed = 20261019
+
+[artifacts]
+calibration_cache_dir = "results/calibrations"
+output_root = "results/compute_heavy"
+
+[[configurations]]
+id = "crossbeam-agave"
+scheduler = "threadance"
+wait_policy = "agave-backoff"
+
+[[configurations]]
+id = "crossbeam-fixed"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 100
+
+[[configurations]]
+id = "rtrb-fixed"
+scheduler = "threadance-hot-first-rtrb"
+queue_capacity = 8
+hot_first_backlog = 2
+wait_policy = "spin-then-park"
+spin_us = 100
+
+[[configurations]]
+id = "bevy"
+scheduler = "bevy"
