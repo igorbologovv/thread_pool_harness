@@ -131,7 +131,7 @@ def main() -> int:
             continue
         meta = manifest[experiment_id]
         rho = float(meta["rho"])
-        tau_us = int(meta["tau_us"])
+        tau_us = int(meta["spin_us"])
         work_units = int(row["work_units"])
         groups[(rho, tau_us)].append(
             {
@@ -185,7 +185,7 @@ def main() -> int:
                     "run_index": int(row["run_index"]),
                     "block": int(meta["block"]),
                     "rho": float(meta["rho"]),
-                    "tau_us": int(meta["tau_us"]),
+                    "tau_us": int(meta["spin_us"]),
                     "event_name": row["event_name"],
                     "percent_running": percent,
                     "status": status,

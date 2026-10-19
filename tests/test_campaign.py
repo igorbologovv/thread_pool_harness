@@ -42,5 +42,21 @@ class CampaignTests(unittest.TestCase):
                     self.assertNotIn("--operations-per-work-unit", argv)
 
 
+    def test_benchmark_output_pattern(self):
+        from experiments.common.campaign import BENCHMARK_ID
+        sample = "Stored benchmark: session=10 experiment=42 database=/tmp/benchmarks.sqlite3"
+        self.assertEqual(BENCHMARK_ID.search(sample).group(1), "42")
+
+    def test_profile_metrics_are_pass_specific(self):
+        from experiments.common.analysis import allowed_metrics
+        self.assertEqual(allowed_metrics("none", "none", "all-at-once"),
+                         ("elapsed_ms", "throughput"))
+        self.assertIn("cache_misses_per_wu",
+                      allowed_metrics("deep", "cache", "bursty-arrivals"))
+        self.assertNotIn("cache_misses_per_wu",
+                         allowed_metrics("deep", "l1d", "bursty-arrivals"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

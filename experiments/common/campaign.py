@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BENCHMARK_ID = re.compile(r"Stored benchmark: session=\\d+ experiment=(\\d+) database=")
+BENCHMARK_ID = re.compile(r"Stored benchmark: session=\d+ experiment=(\d+) database=")
 RUST = ROOT / "target/release/threadance-harness"
 DELIVERY_FLAGS = {
     "all-at-once", "fixed-arrivals", "steady-arrivals",
@@ -37,10 +37,12 @@ def capture(command: list[str], *, check: bool = True) -> str:
 def save_csv(path: Path, records: list[dict]) -> None:
     if not records:
         raise ValueError("Cannot save an empty execution plan")
-    with path.open("w", newline="") as file:
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=list(records[0]))
         writer.writeheader()
         writer.writerows(records)
+    temporary.replace(path)
 
 
 def read_definition(path: Path) -> dict:
@@ -264,7 +266,97 @@ def prepare(data: dict, definition: Path) -> None:
     print("Preparation complete")
 
 
-def collect(data: dict, definition: Path) -> Path:
+def load_and_verify_progress(folder: Path, definition: Path, plan: list[dict],
+                             current_commit: str, binary_hash: str, profile: str,
+                             work_units: int, runs: int) -> tuple[str, list[dict]]:
+    """Validate the recorded prefix, then discard an orphaned interrupted invocation.
+
+    A completed experiment is committed by Rust before its manifest row is
+    atomically written. If interrupted between these steps, its unmanifested
+    session is discarded and that condition is executed again.
+    """
+    if not folder.is_dir():
+        raise ValueError(f"Campaign directory does not exist: {folder}")
+    if (folder / "experiment.toml").read_bytes() != definition.read_bytes():
+        raise ValueError("Archived experiment.toml differs from requested definition")
+    meta = json.loads((folder / "environment.json").read_text())
+    if meta["git_commit"] != current_commit or meta["binary_sha256"] != binary_hash:
+        raise ValueError("Code revision or release binary differs from the original campaign")
+    campaign = meta["campaign_id"]
+    with (folder / "plan.csv").open(newline="") as handle:
+        saved_plan = list(csv.DictReader(handle))
+    normalized_plan = [{k: "" if v is None else str(v) for k, v in row.items()}
+                       for row in plan]
+    if saved_plan != normalized_plan:
+        raise ValueError("Campaign plan no longer matches the original conditions")
+
+    manifest_file = folder / "manifest.csv"
+    if manifest_file.exists():
+        with manifest_file.open(newline="") as handle:
+            manifest = list(csv.DictReader(handle))
+    else:
+        manifest = []
+    if len(manifest) > len(plan):
+        raise ValueError("Manifest exceeds the planned number of conditions")
+    ids = set()
+    for index, row in enumerate(manifest):
+        if any(row.get(k) != v for k, v in normalized_plan[index].items()):
+            raise ValueError(f"Manifest diverges from randomized plan at row {index + 1}")
+        eid = int(row["experiment_id"])
+        if eid <= 0 or eid in ids:
+            raise ValueError("Duplicate or invalid manifest experiment ID")
+        ids.add(eid)
+
+    db_path = folder / "benchmarks.sqlite3"
+    if not db_path.exists():
+        if manifest:
+            raise ValueError("Campaign database missing despite manifest entries")
+        return campaign, manifest
+
+    with sqlite3.connect(db_path) as db:
+        db.execute("PRAGMA foreign_keys = ON")
+        if db.execute("PRAGMA foreign_key_check").fetchall():
+            raise ValueError("Campaign SQLite foreign-key integrity failed")
+        recorded = db.execute(
+            "SELECT e.id, e.work_units, e.profile_mode, s.id "
+            "FROM experiment e JOIN benchmark_session s ON s.id=e.session_id "
+            "WHERE s.campaign_id=?", (campaign,)).fetchall()
+        all_ids = {row[0] for row in recorded}
+        if not ids.issubset(all_ids):
+            raise ValueError("Manifest references absent campaign experiments")
+        expected_passes = 4 if profile == "deep" else 1
+        for eid, unit_count, stored_profile, _ in recorded:
+            if eid not in ids:
+                continue
+            if unit_count != work_units or stored_profile != profile:
+                raise ValueError(f"Experiment {eid} has unexpected workload/profile")
+            count, bad = db.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN success!=1 OR "
+                "completed_work_units!=? THEN 1 ELSE 0 END) "
+                "FROM run WHERE experiment_id=?", (work_units, eid)).fetchone()
+            if count != runs * expected_passes or bad:
+                raise ValueError(f"Experiment {eid} has incomplete/failed measured runs")
+            if profile == "standard":
+                present = db.execute(
+                    "SELECT COUNT(*) FROM run r JOIN perf_metric p ON p.run_id=r.id "
+                    "AND p.event_name='task-clock' AND p.counter_value IS NOT NULL "
+                    "WHERE r.experiment_id=?", (eid,)).fetchone()[0]
+                if present != count:
+                    raise ValueError(f"Experiment {eid} is missing perf task-clock")
+        # Orphaned invocations are safe to remove only within this exact campaign.
+        orphan_sessions = [s for eid, _, _, s in recorded if eid not in ids]
+        extra_sessions = db.execute(
+            "SELECT s.id FROM benchmark_session s "
+            "WHERE s.campaign_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM experiment e WHERE e.session_id=s.id)",
+            (campaign,)).fetchall()
+        orphan_sessions += [s for (s,) in extra_sessions]
+        for session_id in set(orphan_sessions):
+            db.execute("DELETE FROM benchmark_session WHERE id=?", (session_id,))
+    return campaign, manifest
+
+
+def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> Path:
     os.chdir(ROOT)
     if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
         raise RuntimeError("Tracked tree is dirty; commit before collecting data")
@@ -272,52 +364,62 @@ def collect(data: dict, definition: Path) -> Path:
         raise RuntimeError("Release harness not built; run prepare")
     service_us = calibration_service_us(data, definition, create=False)
     plan = make_plan(data, service_us)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    campaign = f"{data['experiment']['name']}-{stamp}"
-    out = ROOT / data["artifacts"]["output_root"] / campaign
-    out.mkdir(parents=True, exist_ok=False)
-    (out / "logs").mkdir()
-    shutil.copy2(definition, out / "experiment.toml")
-    save_csv(out / "plan.csv", plan)
-    if data["experiment"]["workload"] == "bls-aggregate-verify":
-        from dataclasses import asdict
-        from experiments.common.bls_dataset_identity import (
-            config_from_experiment, expected_dataset_path, identify_dataset,
-        )
-        cache, cfg = config_from_experiment(definition)
-        identity = identify_dataset(expected_dataset_path(ROOT / cache, cfg), cfg)
-        (out / "dataset_identity.json").write_text(
-            json.dumps(asdict(identity), indent=2, sort_keys=True) + "\n"
-        )
-    if data["delivery"].get("rho"):
-        if data["experiment"]["workload"] == "compute-heavy":
-            calibration = ROOT / data["artifacts"].get("calibration_cache_dir", "results/calibrations") / (
-                "compute-heavy-ops-" + str(data["workload"]["operations_per_work_unit"])
-                + "-wu-" + str(data["workload"]["work_units"]) + ".json"
+    if campaign_dir is None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        campaign = f"{data['experiment']['name']}-{stamp}"
+        out = ROOT / data["artifacts"]["output_root"] / campaign
+        out.mkdir(parents=True, exist_ok=False)
+        (out / "logs").mkdir()
+        shutil.copy2(definition, out / "experiment.toml")
+        save_csv(out / "plan.csv", plan)
+        if data["experiment"]["workload"] == "bls-aggregate-verify":
+            from dataclasses import asdict
+            from experiments.common.bls_dataset_identity import (
+                config_from_experiment, expected_dataset_path, identify_dataset,
             )
-        else:
-            from experiments.common.calibrate_service_time import find_compatible_calibration
-            calibration = find_compatible_calibration(
-                ROOT, ROOT / data["artifacts"].get("calibration_cache_dir", "results/calibrations"),
-                data["workload"],
+            cache, cfg = config_from_experiment(definition)
+            identity = identify_dataset(expected_dataset_path(ROOT / cache, cfg), cfg)
+            (out / "dataset_identity.json").write_text(
+                json.dumps(asdict(identity), indent=2, sort_keys=True) + "\n"
             )
-        if calibration:
-            shutil.copy2(calibration, out / "calibration.json")
-    meta = dict(campaign_id=campaign, timestamp=datetime.now().astimezone().isoformat(),
-                git_commit=capture(["git", "rev-parse", "HEAD"]),
-                git_branch=capture(["git", "branch", "--show-current"]),
-                threadance_commit=capture(["git", "-C", str(ROOT.parent / "threadance"),
-                                           "rev-parse", "HEAD"], check=False),
-                kernel=capture(["uname", "-r"]), cpu=capture(["lscpu"], check=False),
-                perf=capture(["perf", "--version"], check=False),
-                binary_sha256=hashlib.sha256(RUST.read_bytes()).hexdigest(),
-                service_time_us=service_us)
-    (out / "environment.json").write_text(json.dumps(meta, indent=2) + "\n")
+        if data["delivery"].get("rho"):
+            if data["experiment"]["workload"] == "compute-heavy":
+                calibration = ROOT / data["artifacts"].get("calibration_cache_dir", "results/calibrations") / (
+                    "compute-heavy-ops-" + str(data["workload"]["operations_per_work_unit"])
+                    + "-wu-" + str(data["workload"]["work_units"]) + ".json"
+                )
+            else:
+                from experiments.common.calibrate_service_time import find_compatible_calibration
+                calibration = find_compatible_calibration(
+                    ROOT, ROOT / data["artifacts"].get("calibration_cache_dir", "results/calibrations"),
+                    data["workload"],
+                )
+            if calibration:
+                shutil.copy2(calibration, out / "calibration.json")
+        meta = dict(campaign_id=campaign, timestamp=datetime.now().astimezone().isoformat(),
+                    git_commit=capture(["git", "rev-parse", "HEAD"]),
+                    git_branch=capture(["git", "branch", "--show-current"]),
+                    threadance_commit=capture(["git", "-C", str(ROOT.parent / "threadance"),
+                                               "rev-parse", "HEAD"], check=False),
+                    kernel=capture(["uname", "-r"]), cpu=capture(["lscpu"], check=False),
+                    perf=capture(["perf", "--version"], check=False),
+                    binary_sha256=hashlib.sha256(RUST.read_bytes()).hexdigest(),
+                    service_time_us=service_us)
+        (out / "environment.json").write_text(json.dumps(meta, indent=2) + "\n")
+        db = out / "benchmarks.sqlite3"
+        manifest = []
+    else:
+        out = campaign_dir.resolve()
+        campaign, manifest = load_and_verify_progress(
+            out, definition, plan, capture(["git", "rev-parse", "HEAD"]),
+            hashlib.sha256(RUST.read_bytes()).hexdigest(),
+            data["experiment"]["profile"], int(data["workload"]["work_units"]),
+            int(data["repetitions"]["measured_runs_per_block"]),
+        )
     db = out / "benchmarks.sqlite3"
-    manifest = []
     settling = float(data.get("execution", {}).get("settle_seconds", 3))
     try:
-        for row in plan:
+        for row in plan[len(manifest):]:
             if settling > 0:
                 time.sleep(settling)
             print(f"Block {row['block']}, condition {row['configuration']}, "
@@ -347,7 +449,8 @@ def collect(data: dict, definition: Path) -> Path:
             "ON p.run_id=r.id AND p.event_name='task-clock' "
             "WHERE p.counter_value IS NULL").fetchone()[0]
             if data["experiment"]["profile"] == "standard" else 0)
-    expected_runs = len(plan) * int(data["repetitions"]["measured_runs_per_block"])
+    expected_runs = (len(plan) * int(data["repetitions"]["measured_runs_per_block"])
+                     * (4 if data["experiment"]["profile"] == "deep" else 1))
     if errors or n_experiments != len(plan) or n_runs != expected_runs or invalid or missing:
         raise RuntimeError("Campaign database integrity check failed")
     print(f"Complete: {out}")
@@ -356,7 +459,7 @@ def collect(data: dict, definition: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "prepare", "collect", "analyze"))
+    parser.add_argument("action", choices=("plan", "prepare", "collect", "resume", "analyze"))
     parser.add_argument("--experiment", type=Path, required=True)
     parser.add_argument("--campaign", type=Path)
     args = parser.parse_args()
@@ -368,8 +471,10 @@ def main() -> None:
         service = calibration_service_us(data, definition, create=False)
         for row in make_plan(data, service):
             print(json.dumps(row))
-    elif args.action == "collect":
-        collect(data, definition)
+    elif args.action in ("collect", "resume"):
+        if args.action == "resume" and args.campaign is None:
+            parser.error("resume requires --campaign")
+        collect(data, definition, args.campaign if args.action == "resume" else None)
     else:
         if args.campaign is None:
             parser.error("analyze requires --campaign")

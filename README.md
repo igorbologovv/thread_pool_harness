@@ -35,7 +35,9 @@ Experiment-specific code stays with its experiment. Shared calibration and datas
 Run:
 
 ```bash
-python3 experiments/fixed_wait/run.py
+python3 experiments/fixed_wait/run.py prepare
+python3 experiments/fixed_wait/run.py plan
+sudo python3 experiments/fixed_wait/run.py collect
 ```
 
 Scientific parameters live in:
@@ -44,7 +46,7 @@ Scientific parameters live in:
 experiments/fixed_wait/experiment.toml
 ```
 
-The runner automatically reuses a compatible scheduler-free service-time calibration from `results/calibrations/`, or creates one when necessary.
+The `prepare` step builds the release binary and creates or reuses compatible service-time calibration under `results/calibrations/`. Run `collect` only after preparation (standard profiling requires Linux perf permissions).
 
 Fixed-wait campaign artifacts are stored under:
 
@@ -53,6 +55,14 @@ results/fixed_wait/
 ```
 
 Each campaign directory contains the SQLite database, randomized plan, manifest, copied experiment configuration, calibration artifact, dataset identity, environment metadata, logs, and analysis outputs.
+
+Resume an interrupted campaign (the original source commit and release binary must still match):
+
+```bash
+sudo python3 experiments/fixed_wait/run.py resume --campaign results/fixed_wait/FIXED-WAIT-CAMPAIGN
+```
+
+The runner validates completed conditions and retries any invocation committed to SQLite but missing from the manifest.
 
 Re-run analysis without re-running measurements:
 
@@ -66,7 +76,8 @@ python3 experiments/fixed_wait/diagnostics.py results/fixed_wait/FIXED-WAIT-CAMP
 Run:
 
 ```bash
-python3 experiments/max_throughput/run.py
+python3 experiments/max_throughput/run.py prepare
+python3 experiments/max_throughput/run.py collect
 ```
 
 Its parameters live in:
@@ -101,4 +112,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Python orchestration and analysis scripts use only the standard library unless otherwise documented.
 
-Raw run-level observations are retained. Analysis does not automatically remove statistical outliers or assume Gaussian sampling distributions.
+Raw run-level observations are retained. Analysis does not automatically remove statistical outliers or assume Gaussian sampling distributions. Deep-profile runs are analyzed separately by perf pass rather than pooled together.

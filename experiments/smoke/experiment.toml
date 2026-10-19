@@ -1,0 +1,43 @@
+[experiment]
+name = "smoke"
+workload = "compute-heavy"
+profile = "none"
+
+[workload]
+workers = 2
+work_units = 16
+operations_per_work_unit = 4
+workload_seed = 1
+queue_capacity = 64
+
+[delivery]
+mode = "all-at-once"
+
+[repetitions]
+blocks = 2
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+
+[randomization]
+seed = 20261019
+
+[execution]
+settle_seconds = 0
+
+[analysis]
+reference_configuration = "rayon"
+bootstrap_replicates = 100
+bootstrap_seed = 20261019
+
+[artifacts]
+output_root = "results/smoke"
+
+[[configurations]]
+id = "rayon"
+scheduler = "rayon"
+
+[[configurations]]
+id = "threadance"
+scheduler = "threadance"
+wait_policy = "spin-then-park"
+spin_us = 0

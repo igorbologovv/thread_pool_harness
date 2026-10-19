@@ -16,7 +16,15 @@ python experiments/compute_heavy/analysis.py results/compute_heavy/<campaign-dir
 ```
 
 Replace `compute_heavy` with `fixed_wait` or `queue_topology` to use
-their TOML definitions. The `plan` command for `rho`-based campaigns
+their TOML definitions. To recover an interrupted campaign:
+
+```sh
+sudo python experiments/compute_heavy/run.py resume --campaign results/compute_heavy/<campaign-directory>
+```
+
+Resume validates the archived TOML, randomized plan, completed database records,
+Git revision, and release binary hash. Unmanifested orphaned invocations within
+that campaign are deleted and repeated; other completed results are preserved. The `plan` command for `rho`-based campaigns
 requires `prepare` to have created/reused calibration first. For explicit
 `arrival_rates`, plan needs no calibration.
 
@@ -29,6 +37,8 @@ measured runs by default. Conditions are shuffled with a reproducible seed
 in every block. Measurements are grouped into block-level means, then
 compared to the reference configuration within each block. Confidence
 intervals are 95% percentile bootstrap intervals of the paired differences.
+With deep profiling, each independent perf pass is summarized and compared
+separately; metrics from different passes are never mixed.
 
 ## TOML
 

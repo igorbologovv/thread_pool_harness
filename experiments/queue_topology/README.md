@@ -6,8 +6,8 @@ engine. See [experiment workflows](../README.md) for complete instructions.
 From the repository root:
 
 ```sh
-python experiments/queue_topology/run.py plan
 python experiments/queue_topology/run.py prepare
+python experiments/queue_topology/run.py plan
 sudo python experiments/queue_topology/run.py collect
 python experiments/queue_topology/analysis.py results/queue_topology/<campaign-directory>
 ```
