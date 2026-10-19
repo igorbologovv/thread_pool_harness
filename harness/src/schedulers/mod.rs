@@ -6,6 +6,7 @@
 
 pub mod bevy;
 pub mod gate_ring;
+pub mod gate_rtrb;
 pub mod rayon;
 pub mod threadance;
 
@@ -30,8 +31,8 @@ mod tests {
     };
 
     use super::{
-        Scheduler, bevy::BevyScheduler, gate_ring::GateScheduler, rayon::RayonScheduler,
-        threadance::ThreadanceScheduler,
+        Scheduler, bevy::BevyScheduler, gate_ring::GateScheduler, gate_rtrb::RtrbGateScheduler,
+        rayon::RayonScheduler, threadance::ThreadanceScheduler,
     };
     use crate::{
         delivery::{DeliveryMode, DeliverySchedule},
@@ -111,6 +112,18 @@ mod tests {
         )
         .unwrap();
 
+        verify(&scheduler);
+    }
+
+    #[test]
+    fn segmented_gate_rtrb_executes_every_work_unit_once() {
+        let scheduler = RtrbGateScheduler::new(
+            NonZeroUsize::new(WORKERS).unwrap(),
+            NonZeroUsize::new(WORK_UNITS).unwrap(),
+            2,
+            ::threadance::SegmentedIdle::SpinThenPark(Duration::ZERO),
+        )
+        .unwrap();
         verify(&scheduler);
     }
 

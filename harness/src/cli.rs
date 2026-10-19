@@ -209,6 +209,7 @@ pub enum SchedulerKind {
     Bevy,
     Threadance,
     ThreadanceHotFirst,
+    ThreadanceHotFirstRtrb,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

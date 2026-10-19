@@ -154,31 +154,36 @@ impl BenchmarkDb {
         let measured_runs = usize_to_i64(cli.runs.get(), "measured_runs")?;
 
         let (queue_capacity, threadance_wait_policy, threadance_spin_us) = match cli.scheduler {
-            SchedulerKind::Threadance | SchedulerKind::ThreadanceHotFirst => {
-                match cli.threadance_wait_policy {
-                    ThreadanceWaitPolicy::SpinThenPark => (
-                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                        Some("spin-then-park"),
-                        Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
-                    ),
-                    ThreadanceWaitPolicy::AgaveBackoff => (
-                        Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
-                        Some("agave-backoff"),
-                        None,
-                    ),
-                }
-            }
+            SchedulerKind::Threadance
+            | SchedulerKind::ThreadanceHotFirst
+            | SchedulerKind::ThreadanceHotFirstRtrb => match cli.threadance_wait_policy {
+                ThreadanceWaitPolicy::SpinThenPark => (
+                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                    Some("spin-then-park"),
+                    Some(u64_to_i64(cli.threadance_spin_us, "threadance_spin_us")?),
+                ),
+                ThreadanceWaitPolicy::AgaveBackoff => (
+                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                    Some("agave-backoff"),
+                    None,
+                ),
+            },
             SchedulerKind::Rayon | SchedulerKind::Bevy => (None, None, None),
         };
 
         // Persist experimental routing parameters and dependency identity.
         let extra_config_json = match cli.scheduler {
-            SchedulerKind::ThreadanceHotFirst => {
+            SchedulerKind::ThreadanceHotFirst | SchedulerKind::ThreadanceHotFirstRtrb => {
                 let local_threadance =
                     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../threadance");
                 Some(
                     serde_json::json!({
                         "hot_first_backlog": cli.hot_first_backlog,
+                        "ring_implementation": match cli.scheduler {
+                            SchedulerKind::ThreadanceHotFirst => "custom",
+                            SchedulerKind::ThreadanceHotFirstRtrb => "rtrb-0.4.0",
+                            _ => unreachable!(),
+                        },
                         "ring_slots_per_worker": cli.hot_first_backlog,
                         "threadance_git_commit": git_output(
                             &local_threadance,
@@ -784,6 +789,7 @@ fn scheduler_name(scheduler: SchedulerKind) -> &'static str {
         SchedulerKind::Bevy => "bevy",
         SchedulerKind::Threadance => "threadance",
         SchedulerKind::ThreadanceHotFirst => "threadance-hot-first",
+        SchedulerKind::ThreadanceHotFirstRtrb => "threadance-hot-first-rtrb",
     }
 }
 
