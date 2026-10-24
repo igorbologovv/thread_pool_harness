@@ -1,0 +1,23 @@
+# Full BLS matrix: 20 randomized blocks and two measured runs per condition.
+# Assess calibration, host stability, and distribution shape before interpreting.
+[study]
+name = "bls-full"
+template = "experiments/queue_topology/experiment.toml"
+output_dir = "experiments/generated/bls-full"
+output_root = "results/studies/bls-full/campaigns"
+max_invocations = 10000
+
+[axes]
+workers = [2, 4]
+schedulers = ["rayon", "bevy", "threadance", "threadance-hot-first", "threadance-hot-first-rtrb"]
+wait_policies = ["crossbeam-wait", "spin-then-park", "agave-backoff"]
+spin_durations_us = [0, 40, 100]
+queue_capacities = [8, 64]
+hot_first_backlogs = [1, 2]
+delivery_modes = ["all-at-once", "fixed-arrivals", "bursty-arrivals"]
+
+[overrides]
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 3.0
