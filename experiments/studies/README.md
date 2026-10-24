@@ -91,3 +91,29 @@ Current limitations: no automatic run-order diagnostics or multimodality
 detection, no cross-workload normalization, and no automatic claim of a
 winning scheduler. Full scientific conclusions require examining raw runs,
 measurement quality, and confidence interval precision.
+
+## One-command local execution
+
+The all-scheduler BLS study has its own 20-block specification:
+`experiments/studies/bls_full.toml`. The shorter
+`full_pool_pilot.toml` remains a two-block functional pilot.
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_full.toml --check
+python3 -m experiments.common.study_run --spec experiments/studies/bls_full.toml --run
+```
+
+`--check` does not build, prepare or collect benchmarks. `--run` expands
+the matrix and executes each campaign sequentially: release build, dataset
+preparation, collection, per-campaign paired analysis, then one study-wide
+HTML/JSON report. If interrupted, rerunning the same command attempts to
+resume matching campaigns. Existing campaigns and binaries must satisfy
+the underlying git/binary identity checks; ambiguous matches fail closed.
+Never run this under sudo: grant perf permissions separately as appropriate.
+
+**Research scope:** this BLS matrix varies worker counts, delivery modes,
+wait policies, spin times, queue capacities and segmented backlogs, but it
+does not exhaust every conceivable workload size or BLS task granularity.
+A separate compute-heavy study will address fixed-total-work granularity
+comparisons. Full-study run count is 8,800 invocations (20 blocks).
+Check disk space, profiling access, and machine stability before the full run.
