@@ -19,7 +19,7 @@ class StudyTests(unittest.TestCase):
         campaigns, skipped = expand_study(self.spec, self.template)
         self.assertEqual(len(campaigns), 4)  # 2 worker counts x 2 delivery modes
         self.assertEqual(len(skipped), 0)
-        self.assertEqual(sum(c[2]["invocations"] for c in campaigns), 4 * 3 * 2 * 2 * 6)
+        self.assertEqual(sum(c[2]["invocations"] for c in campaigns), 4 * 3 * 2 * 7)
         for filename, config, stats in campaigns:
             self.assertEqual(tomllib.loads(render_toml(config)), config)
             self.assertEqual(len(make_plan(config, None)), stats["invocations"])
@@ -42,7 +42,7 @@ class StudyTests(unittest.TestCase):
 
     def test_check_does_not_write(self):
         report = design(ROOT / "experiments/studies/pilot.toml", write=False)
-        self.assertEqual(report["totals"]["invocations"], 288)
+        self.assertEqual(report["totals"]["invocations"], 168)
         self.assertEqual(len(report["campaigns"]), 4)
 
     def test_workload_axes_validation(self):
