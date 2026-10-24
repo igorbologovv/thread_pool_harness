@@ -43,13 +43,14 @@ jobs:
             experiments/max_throughput/run.py \
             experiments/common/campaign.py \
             experiments/common/analysis.py \
+            experiments/common/study.py \
             experiments/compute_heavy/run.py \
             experiments/compute_heavy/analysis.py \
             experiments/queue_topology/run.py \
             experiments/queue_topology/analysis.py
 
       - name: Python campaign tests
-        run: python3 -m unittest discover -s tests -p 'test_campaign.py'
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
 
       - name: Real harness campaign and resume smoke test
         run: python3 scripts/smoke_campaign.py
@@ -66,4 +67,4 @@ jobs:
           rm -f "$DB"
           ./scripts/init_benchmark_db.sh "$DB"
           sqlite3 "$DB" 'PRAGMA foreign_key_check;'
-          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "9"
+          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "10"

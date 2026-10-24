@@ -1,6 +1,8 @@
 use std::{io, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use ::threadance::{AgaveBackoff, CrossbeamMpmc, ExecuteError, SpinThenPark, ThreadPool};
+use ::threadance::{
+    AgaveBackoff, CrossbeamMpmc, CrossbeamWait, ExecuteError, SpinThenPark, ThreadPool,
+};
 
 use crate::{
     delivery::{DeliverySchedule, run_with_delivery},
@@ -11,10 +13,12 @@ use crate::{
 
 type SpinPool = ThreadPool<CrossbeamMpmc, SpinThenPark>;
 type AgavePool = ThreadPool<CrossbeamMpmc, AgaveBackoff>;
+type NativePool = ThreadPool<CrossbeamMpmc, CrossbeamWait>;
 
 enum ThreadancePool {
     Spin(SpinPool),
     Agave(AgavePool),
+    Native(NativePool),
 }
 
 impl ThreadancePool {
@@ -25,6 +29,7 @@ impl ThreadancePool {
         match self {
             Self::Spin(pool) => pool.execute(task),
             Self::Agave(pool) => pool.execute(task),
+            Self::Native(pool) => pool.execute(task),
         }
     }
 }
@@ -45,6 +50,19 @@ impl ThreadanceScheduler {
 
         Ok(Self {
             pool: ThreadancePool::Spin(pool),
+        })
+    }
+
+    pub fn new_crossbeam_wait(
+        workers: NonZeroUsize,
+        queue_capacity: NonZeroUsize,
+    ) -> io::Result<Self> {
+        let pool = ThreadPool::builder(workers, queue_capacity)
+            .wake_policy(CrossbeamWait::default())
+            .build()?;
+
+        Ok(Self {
+            pool: ThreadancePool::Native(pool),
         })
     }
 

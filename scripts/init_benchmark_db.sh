@@ -35,7 +35,7 @@ VERSIONS="$(
     "
 )"
 
-if [[ "$VERSIONS" != "1,2,3,4,5,6,7,8,9" ]]; then
+if [[ "$VERSIONS" != "1,2,3,4,5,6,7,8,9,10" ]]; then
     echo "ERROR: unexpected migration history: $VERSIONS"
     exit 1
 fi

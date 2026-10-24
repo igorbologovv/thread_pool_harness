@@ -154,6 +154,17 @@ mod tests {
     }
 
     #[test]
+    fn threadance_crossbeam_wait_executes_every_work_unit_exactly_once() {
+        let scheduler = ThreadanceScheduler::new_crossbeam_wait(
+            NonZeroUsize::new(WORKERS).unwrap(),
+            NonZeroUsize::new(WORK_UNITS).unwrap(),
+        )
+        .unwrap();
+
+        verify(&scheduler);
+    }
+
+    #[test]
     fn threadance_agave_backoff_executes_every_work_unit_exactly_once() {
         let scheduler = ThreadanceScheduler::new_agave_backoff(
             NonZeroUsize::new(WORKERS).unwrap(),

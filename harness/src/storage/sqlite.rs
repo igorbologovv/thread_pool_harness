@@ -30,6 +30,8 @@ const MIGRATION_008_ARRIVAL_TIMING: &str =
     include_str!("../../sql/migrations/008_arrival_timing.sql");
 const MIGRATION_009_THREADANCE_WAIT_POLICY: &str =
     include_str!("../../sql/migrations/009_threadance_wait_policy.sql");
+const MIGRATION_010_NATIVE_CROSSBEAM_WAIT: &str =
+    include_str!("../../sql/migrations/010_native_crossbeam_wait.sql");
 
 type StorageError = Box<dyn Error + Send + Sync + 'static>;
 type StorageResult<T> = Result<T, StorageError>;
@@ -165,6 +167,11 @@ impl BenchmarkDb {
                 ThreadanceWaitPolicy::AgaveBackoff => (
                     Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
                     Some("agave-backoff"),
+                    None,
+                ),
+                ThreadanceWaitPolicy::CrossbeamWait => (
+                    Some(usize_to_i64(cli.queue_capacity.get(), "queue_capacity")?),
+                    Some("crossbeam-wait"),
                     None,
                 ),
             },
@@ -666,6 +673,16 @@ fn apply_migrations(connection: &Connection) -> StorageResult<()> {
             ",
             [],
         )?;
+    }
+
+    let has_native_crossbeam_wait: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 10)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !has_native_crossbeam_wait {
+        connection.execute_batch(MIGRATION_010_NATIVE_CROSSBEAM_WAIT)?;
     }
 
     Ok(())

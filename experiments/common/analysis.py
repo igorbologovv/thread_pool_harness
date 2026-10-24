@@ -74,7 +74,9 @@ def analyze(folder: Path) -> None:
 
     counters = ",\n".join(
         "(SELECT p.counter_value FROM perf_metric p WHERE p.run_id=r.id "
-        f"AND p.event_name='{event}') AS counter_{i}"
+        f"AND p.event_name IN ('{event}', '{event}:u') "
+        f"ORDER BY CASE WHEN p.event_name='{event}' THEN 0 ELSE 1 END "
+        f"LIMIT 1) AS counter_{i}"
         for i, event in enumerate(EVENTS)
     )
     query = f"""
