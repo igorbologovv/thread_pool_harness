@@ -91,6 +91,13 @@ def read_definition(path: Path) -> dict:
             "threadance", "threadance-hot-first", "threadance-hot-first-rtrb", "rayon", "bevy"
         ):
             raise ValueError(f"Unknown scheduler in {config['id']}")
+        policy = config.get("wait_policy", "spin-then-park")
+        if policy not in ("spin-then-park", "agave-backoff", "crossbeam-wait"):
+            raise ValueError(f"Unknown wait policy in {config['id']}")
+        if policy == "crossbeam-wait" and config["scheduler"] != "threadance":
+            raise ValueError(f"Crossbeam wait only supports MPMC Threadance in {config['id']}")
+        if policy != "spin-then-park" and config.get("spin_us", 0) not in (0, [0]):
+            raise ValueError(f"spin_us is meaningful only for spin-then-park in {config['id']}")
         spins = config.get("spin_us", [0])
         spins = spins if isinstance(spins, list) else [spins]
         if not spins or any(int(v) < 0 for v in spins):
