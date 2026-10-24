@@ -345,9 +345,12 @@ def load_and_verify_progress(folder: Path, definition: Path, plan: list[dict],
                 raise ValueError(f"Experiment {eid} has incomplete/failed measured runs")
             if profile == "standard":
                 present = db.execute(
-                    "SELECT COUNT(*) FROM run r JOIN perf_metric p ON p.run_id=r.id "
-                    "AND p.event_name='task-clock' AND p.counter_value IS NOT NULL "
-                    "WHERE r.experiment_id=?", (eid,)).fetchone()[0]
+                    "SELECT COUNT(*) FROM run r WHERE r.experiment_id=? "
+                    "AND EXISTS (SELECT 1 FROM perf_metric p WHERE p.run_id=r.id "
+                    "AND p.event_name IN ('task-clock', 'task-clock:u') "
+                    "AND p.counter_value IS NOT NULL)",
+                    (eid,),
+                ).fetchone()[0]
                 if present != count:
                     raise ValueError(f"Experiment {eid} is missing perf task-clock")
         # Orphaned invocations are safe to remove only within this exact campaign.
@@ -391,17 +394,23 @@ def verify_campaign_database(folder: Path, data: dict, expected_invocations: int
         event_names = []
         if data["experiment"]["profile"] == "standard":
             missing = connection.execute(
-                "SELECT COUNT(*) FROM run r LEFT JOIN perf_metric p "
-                "ON p.run_id=r.id AND p.event_name='task-clock' "
-                "WHERE p.counter_value IS NULL"
+                "SELECT COUNT(*) FROM run r WHERE NOT EXISTS "
+                "(SELECT 1 FROM perf_metric p WHERE p.run_id=r.id "
+                "AND p.event_name IN ('task-clock', 'task-clock:u') "
+                "AND p.counter_value IS NOT NULL)"
             ).fetchone()[0]
             if missing:
                 examples = connection.execute(
-                    "SELECT r.id, e.scheduler, COALESCE(p.status, 'absent') "
+                    "SELECT r.id, e.scheduler, COALESCE("
+                    "(SELECT GROUP_CONCAT(p.event_name || '=' || p.status) "
+                    "FROM perf_metric p WHERE p.run_id=r.id "
+                    "AND p.event_name IN ('task-clock', 'task-clock:u')), 'absent') "
                     "FROM run r JOIN experiment e ON e.id=r.experiment_id "
-                    "LEFT JOIN perf_metric p ON p.run_id=r.id "
-                    "AND p.event_name='task-clock' "
-                    "WHERE p.counter_value IS NULL ORDER BY r.id LIMIT 5"
+                    "WHERE NOT EXISTS (SELECT 1 FROM perf_metric p "
+                    "WHERE p.run_id=r.id "
+                    "AND p.event_name IN ('task-clock', 'task-clock:u') "
+                    "AND p.counter_value IS NOT NULL) "
+                    "ORDER BY r.id LIMIT 5"
                 ).fetchall()
                 event_names = connection.execute(
                     "SELECT event_name, COUNT(*) FROM perf_metric "
