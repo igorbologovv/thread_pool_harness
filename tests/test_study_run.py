@@ -5,9 +5,27 @@ import unittest
 from pathlib import Path
 
 from experiments.common.study_run import completed, existing_campaign
+from experiments.common.campaign import ROOT
+from experiments.common.study import read_study, expand_study
+from experiments.common.campaign import read_definition
 
 
 class StudyRunnerTests(unittest.TestCase):
+    def test_end_to_end_pilot_covers_every_scheduler(self):
+        spec = read_study(ROOT / "experiments/studies/bls_end_to_end.toml")
+        definition = read_definition(ROOT / spec["study"]["template"])
+        campaigns, skipped = expand_study(spec, definition)
+        self.assertEqual(len(campaigns), 1)
+        self.assertEqual(campaigns[0][2]["invocations"], 18)
+        self.assertEqual(campaigns[0][2]["measured_runs"], 36)
+        self.assertEqual({
+            c["scheduler"] for c in campaigns[0][1]["configurations"]
+        }, {
+            "rayon", "bevy", "threadance",
+            "threadance-hot-first", "threadance-hot-first-rtrb",
+        })
+        self.assertTrue(skipped)
+
     def test_matching_campaign_is_resumed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
