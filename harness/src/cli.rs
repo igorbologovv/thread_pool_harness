@@ -39,6 +39,7 @@ pub struct Cli {
     ///
     /// `spin-then-park` uses --threadance-spin-us before blocking.
     /// `agave-backoff` uses the Agave-style adaptive backoff strategy.
+    /// `crossbeam-wait` delegates blocking to Crossbeam (MPMC topology only).
     #[arg(long, value_enum, default_value = "spin-then-park")]
     pub threadance_wait_policy: ThreadanceWaitPolicy,
 
@@ -216,6 +217,7 @@ pub enum SchedulerKind {
 pub enum ThreadanceWaitPolicy {
     SpinThenPark,
     AgaveBackoff,
+    CrossbeamWait,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

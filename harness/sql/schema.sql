@@ -22,7 +22,8 @@ INSERT OR IGNORE INTO schema_migrations (
     (6, 'Record actual wall-clock start time for measured runs'),
     (7, 'Group benchmark sessions into campaigns'),
     (8, 'Record actual paced submission timing'),
-    (9, 'Separate Threadance scheduler from worker wait policy');
+    (9, 'Separate Threadance scheduler from worker wait policy'),
+    (10, 'Allow native Crossbeam wait policy');
 
 
 -- ============================================================
@@ -147,7 +148,8 @@ CREATE TABLE IF NOT EXISTS experiment (
                                             threadance_wait_policy IS NULL
                                             OR threadance_wait_policy IN (
                                                 'spin-then-park',
-                                                'agave-backoff'
+                                                'agave-backoff',
+                                                'crossbeam-wait'
                                             )
                                         ),
 
