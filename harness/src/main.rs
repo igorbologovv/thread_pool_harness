@@ -141,6 +141,9 @@ where
                     std::time::Duration::from_micros(cli.threadance_spin_us),
                 ),
                 ThreadanceWaitPolicy::AgaveBackoff => ::threadance::SegmentedIdle::AgaveBackoff,
+                ThreadanceWaitPolicy::CrossbeamWait => {
+                    panic!("crossbeam-wait is only compatible with threadance MPMC")
+                },
             };
             let scheduler =
                 GateScheduler::new(cli.workers, cli.queue_capacity, cli.hot_first_backlog, idle)
@@ -154,6 +157,9 @@ where
                     std::time::Duration::from_micros(cli.threadance_spin_us),
                 ),
                 ThreadanceWaitPolicy::AgaveBackoff => ::threadance::SegmentedIdle::AgaveBackoff,
+                ThreadanceWaitPolicy::CrossbeamWait => {
+                    panic!("crossbeam-wait is only compatible with threadance MPMC")
+                },
             };
             let scheduler = RtrbGateScheduler::new(
                 cli.workers,
@@ -174,6 +180,9 @@ where
                 ),
                 ThreadanceWaitPolicy::AgaveBackoff => {
                     ThreadanceScheduler::new_agave_backoff(cli.workers, cli.queue_capacity)
+                }
+                ThreadanceWaitPolicy::CrossbeamWait => {
+                    ThreadanceScheduler::new_crossbeam_wait(cli.workers, cli.queue_capacity)
                 }
             }
             .expect("failed to create Threadance thread pool");
