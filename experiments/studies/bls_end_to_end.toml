@@ -1,0 +1,24 @@
+# Small end-to-end verification of every scheduler family and supported wake
+# policy. Uses the same native release build, SQLite, analysis and report path
+# as the full BLS study, but only 18 harness invocations.
+[study]
+name = "bls-end-to-end"
+template = "experiments/queue_topology/experiment.toml"
+output_dir = "experiments/generated/bls-end-to-end"
+output_root = "results/studies/bls-end-to-end/campaigns"
+max_invocations = 30
+
+[axes]
+workers = [2]
+schedulers = ["rayon", "bevy", "threadance", "threadance-hot-first", "threadance-hot-first-rtrb"]
+wait_policies = ["crossbeam-wait", "spin-then-park", "agave-backoff"]
+spin_durations_us = [0]
+queue_capacities = [8]
+hot_first_backlogs = [1]
+delivery_modes = ["all-at-once"]
+
+[overrides]
+blocks = 2
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 1.0

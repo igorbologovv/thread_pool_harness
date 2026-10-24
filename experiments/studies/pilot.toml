@@ -1,0 +1,19 @@
+# Small pilot; no benchmarks are launched by the planner.
+[study]
+name = "queue-pilot"
+template = "experiments/queue_topology/experiment.toml"
+output_dir = "experiments/generated/queue-pilot"
+output_root = "results/studies/queue-pilot/campaigns"
+max_invocations = 500
+
+[axes]
+workers = [2, 4]
+queue_capacities = [8, 64]
+hot_first_backlogs = [1, 2]
+delivery_modes = ["bursty-arrivals", "fixed-arrivals"]
+
+[overrides]
+blocks = 3
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 1.0
