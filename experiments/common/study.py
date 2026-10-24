@@ -1,0 +1,274 @@
+"""Expand a study specification into reproducible campaign TOMLs (no measurements).
+
+The existing campaign engine remains responsible for calibration, collection,
+resumption and statistical analysis. This module only designs experiments.
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import itertools
+import json
+import math
+import re
+import tomllib
+from pathlib import Path
+
+from experiments.common.campaign import ROOT, make_plan, read_definition
+
+AXES = {
+    "workers", "work_units", "operations_per_work_unit",
+    "certificates_per_work_unit", "delivery_modes",
+    "queue_capacities", "hot_first_backlogs",
+}
+OVERRIDES = {
+    "blocks", "warmup_runs_per_block", "measured_runs_per_block",
+    "settle_seconds",
+}
+NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def root_path(value: str) -> Path:
+    path = (ROOT / value).resolve()
+    if not path.is_relative_to(ROOT):
+        raise ValueError(f"Path must stay within repository: {value}")
+    return path
+
+
+def read_study(path: Path) -> dict:
+    spec = tomllib.loads(path.read_text())
+    meta = spec.get("study", {})
+    if not NAME.fullmatch(str(meta.get("name", ""))):
+        raise ValueError("study.name must contain only letters, digits, _ or -")
+    for required in ("template", "output_dir"):
+        if not isinstance(meta.get(required), str) or not meta[required]:
+            raise ValueError(f"study.{required} is required")
+        root_path(meta[required])
+    root_path(meta.get("output_root", f"results/studies/{meta['name']}/campaigns"))
+    if int(meta.get("max_invocations", 2000)) < 1:
+        raise ValueError("study.max_invocations must be positive")
+    axes = spec.get("axes", {})
+    if not axes or set(axes) - AXES:
+        raise ValueError(f"Specify supported axes only: {sorted(AXES)}")
+    for key, values in axes.items():
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"axes.{key} must be a non-empty array")
+        if len(set(values)) != len(values):
+            raise ValueError(f"axes.{key} contains duplicates")
+        if key == "delivery_modes":
+            if any(v not in (
+                "all-at-once", "fixed-arrivals", "steady-arrivals",
+                "variable-arrivals", "bursty-arrivals"
+            ) for v in values):
+                raise ValueError("Unknown delivery mode")
+        elif any(type(v) is not int or v < 1 for v in values):
+            raise ValueError(f"axes.{key} needs positive integers")
+    overrides = spec.get("overrides", {})
+    if set(overrides) - OVERRIDES:
+        raise ValueError(f"Unknown overrides: {set(overrides) - OVERRIDES}")
+    for key, value in overrides.items():
+        if key == "settle_seconds":
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError("Invalid settle_seconds")
+        elif type(value) is not int or value < (0 if key == "warmup_runs_per_block" else 1):
+            raise ValueError(f"Invalid {key}")
+    return spec
+
+
+def expand_configurations(base: dict, axes: dict, workers: int) -> tuple[list[dict], list[dict]]:
+    configs = []
+    skipped = []
+    for original in base["configurations"]:
+        scheduler = original["scheduler"]
+        if scheduler in ("rayon", "bevy"):
+            configs.append(copy.deepcopy(original))
+            continue
+
+        capacities = axes.get("queue_capacities", [original.get(
+            "queue_capacity", base["workload"].get("queue_capacity", 1024)
+        )])
+        is_hot_first = "hot-first" in scheduler
+        backlogs = axes.get("hot_first_backlogs", [original.get("hot_first_backlog", 1)]) if is_hot_first else [None]
+        for capacity, backlog in itertools.product(capacities, backlogs):
+            if is_hot_first and backlog * workers > capacity:
+                skipped.append(dict(configuration=original["id"], workers=workers,
+                                    queue_capacity=capacity, hot_first_backlog=backlog,
+                                    reason="backlog * workers exceeds queue capacity"))
+                continue
+            config = copy.deepcopy(original)
+            config["queue_capacity"] = capacity
+            suffix = ""
+            if "queue_capacities" in axes:
+                suffix += f"__q{capacity}"
+            if is_hot_first:
+                config["hot_first_backlog"] = backlog
+                if "hot_first_backlogs" in axes:
+                    suffix += f"__b{backlog}"
+            config["id"] += suffix
+            if config.get("wait_policy") == "agave-backoff":
+                spins = config.get("spin_us", 0)
+                if spins not in (0, [0]):
+                    raise ValueError("Agave backoff cannot be swept over spin_us")
+            configs.append(config)
+    ids = [config["id"] for config in configs]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate expanded configuration IDs")
+    if not configs:
+        raise ValueError("No configurations remain after filtering")
+    reference = base.get("analysis", {}).get("reference_configuration", base["configurations"][0]["id"])
+    if reference not in ids:
+        raise ValueError(
+            f"Reference '{reference}' expands with an axis; use a fixed "
+            "reference such as Rayon or Bevy in the template"
+        )
+    return configs, skipped
+
+
+def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], list[dict]]:
+    axes = spec["axes"]
+    workload_kind = base["experiment"]["workload"]
+    if workload_kind == "compute-heavy" and "certificates_per_work_unit" in axes:
+        raise ValueError("BLS granularity axis incompatible with compute-heavy")
+    if workload_kind == "bls-aggregate-verify" and "operations_per_work_unit" in axes:
+        raise ValueError("Compute-heavy granularity axis incompatible with BLS")
+
+    granularity_key = ("operations_per_work_unit" if workload_kind == "compute-heavy"
+                       else "certificates_per_work_unit")
+    w = base["workload"]
+    matrix = itertools.product(
+        axes.get("workers", [w["workers"]]),
+        axes.get("work_units", [w["work_units"]]),
+        axes.get(granularity_key, [w[granularity_key]]),
+        axes.get("delivery_modes", [base["delivery"]["mode"]]),
+    )
+    campaigns = []
+    skipped = []
+    for workers, work_units, granularity, mode in matrix:
+        concrete = copy.deepcopy(base)
+        concrete["workload"]["workers"] = workers
+        concrete["workload"]["work_units"] = work_units
+        concrete["workload"][granularity_key] = granularity
+        concrete["delivery"]["mode"] = mode
+        if mode == "all-at-once":
+            concrete["delivery"].pop("rho", None)
+            concrete["delivery"].pop("arrival_rates", None)
+        elif not (concrete["delivery"].get("rho") or concrete["delivery"].get("arrival_rates")):
+            raise ValueError("Scheduled modes require rho or arrival_rates in the template")
+        for key, value in spec.get("overrides", {}).items():
+            section = "execution" if key == "settle_seconds" else "repetitions"
+            concrete.setdefault(section, {})[key] = value
+
+        concrete["configurations"], rejected = expand_configurations(base, axes, workers)
+        skipped.extend(rejected)
+        key = f"w{workers}-n{work_units}-g{granularity}-{mode}"
+        name = f"{spec['study']['name']}-{key}"
+        concrete["experiment"]["name"] = name
+        concrete["artifacts"]["output_root"] = spec["study"].get(
+            "output_root", f"results/studies/{spec['study']['name']}/campaigns"
+        )
+        service_us = 100.0 if concrete["delivery"].get("rho") else None
+        plan = make_plan(concrete, service_us)
+        passes = 4 if concrete["experiment"]["profile"] == "deep" else 1
+        invocations = len(plan)
+        repeats = concrete["repetitions"]
+        stats = dict(
+            name=name, file=f"{key}.toml",
+            conditions=invocations // repeats["blocks"],
+            invocations=invocations,
+            measured_runs=invocations * repeats["measured_runs_per_block"] * passes,
+            warmup_runs=invocations * repeats.get("warmup_runs_per_block", 0) * passes,
+            settle_floor_seconds=invocations * concrete.get("execution", {}).get("settle_seconds", 3),
+        )
+        campaigns.append((stats["file"], concrete, stats))
+    if not campaigns:
+        raise ValueError("Study has no campaigns")
+    if len({name for name, _, _ in campaigns}) != len(campaigns):
+        raise ValueError("Study contains duplicate campaign filenames")
+    total = sum(stats["invocations"] for _, _, stats in campaigns)
+    maximum = int(spec["study"].get("max_invocations", 2000))
+    if total > maximum:
+        raise ValueError(f"Study requires {total} invocations; limit is {maximum}")
+    return campaigns, skipped
+
+
+def toml_literal(value: object) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_literal(item) for item in value) + "]"
+    raise ValueError(f"Cannot serialize TOML value: {value!r}")
+
+
+def render_toml(data: dict) -> str:
+    lines = []
+    for section, values in data.items():
+        if section == "configurations":
+            for config in values:
+                lines += ["[[configurations]]"]
+                lines += [f"{key} = {toml_literal(value)}" for key, value in config.items()]
+                lines.append("")
+        else:
+            lines += [f"[{section}]"]
+            lines += [f"{key} = {toml_literal(value)}" for key, value in values.items()]
+            lines.append("")
+    result = "\n".join(lines)
+    # Fail before persisting a malformed TOML.
+    if tomllib.loads(result) != data:
+        raise ValueError("TOML round-trip validation failed")
+    return result
+
+
+def design(spec_path: Path, *, write: bool) -> dict:
+    spec = read_study(spec_path)
+    template = read_definition(root_path(spec["study"]["template"]))
+    campaigns, skipped = expand_study(spec, template)
+    output = root_path(spec["study"]["output_dir"])
+    files = {filename: render_toml(data) for filename, data, _ in campaigns}
+    report = {
+        "study": spec["study"]["name"],
+        "spec_sha256": hashlib.sha256(spec_path.read_bytes()).hexdigest(),
+        "template": spec["study"]["template"],
+        "output_dir": str(output.relative_to(ROOT)),
+        "campaigns": [
+            {**stats, "sha256": hashlib.sha256(files[filename].encode()).hexdigest()}
+            for filename, _, stats in campaigns
+        ],
+        "skipped_incompatible_configurations": skipped,
+    }
+    report["totals"] = {
+        key: sum(c[key] for c in report["campaigns"])
+        for key in ("invocations", "measured_runs", "warmup_runs", "settle_floor_seconds")
+    }
+    if write:
+        manifest = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        targets = {output / name: content for name, content in files.items()}
+        targets[output / "study_manifest.json"] = manifest
+        # Check conflicts before writing anything.
+        for path, content in targets.items():
+            if path.exists() and path.read_text() != content:
+                raise FileExistsError(f"Refusing to overwrite modified study artifact: {path}")
+        output.mkdir(parents=True, exist_ok=True)
+        for path, content in targets.items():
+            path.write_text(content)
+    return report
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spec", type=Path, required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check", action="store_true", help="Print plan without writing files")
+    action.add_argument("--write", action="store_true", help="Save campaign TOMLs and manifest")
+    args = parser.parse_args()
+    print(json.dumps(design(args.spec, write=args.write), indent=2))
+
+
+if __name__ == "__main__":
+    main()
