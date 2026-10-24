@@ -67,4 +67,4 @@ jobs:
           rm -f "$DB"
           ./scripts/init_benchmark_db.sh "$DB"
           sqlite3 "$DB" 'PRAGMA foreign_key_check;'
-          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "9"
+          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "10"
