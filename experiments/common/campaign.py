@@ -363,6 +363,74 @@ def load_and_verify_progress(folder: Path, definition: Path, plan: list[dict],
     return campaign, manifest
 
 
+
+def verify_campaign_database(folder: Path, data: dict, expected_invocations: int) -> None:
+    """Audit a completed campaign without rerunning or altering measurements.
+
+    Print precise failure conditions rather than discarding an otherwise
+    complete SQLite database behind a generic integrity-check error.
+    """
+    database = folder / "benchmarks.sqlite3"
+    if not database.is_file():
+        raise RuntimeError(f"Campaign database missing: {database}")
+    repeats = int(data["repetitions"]["measured_runs_per_block"])
+    passes = 4 if data["experiment"]["profile"] == "deep" else 1
+    expected_runs = expected_invocations * repeats * passes
+    with sqlite3.connect(database) as connection:
+        errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+        n_experiments = connection.execute(
+            "SELECT COUNT(*) FROM experiment"
+        ).fetchone()[0]
+        n_runs = connection.execute("SELECT COUNT(*) FROM run").fetchone()[0]
+        invalid = connection.execute(
+            "SELECT COUNT(*) FROM run WHERE success<>1 OR completed_work_units<>?",
+            (int(data["workload"]["work_units"]),)
+        ).fetchone()[0]
+        missing = 0
+        examples = []
+        event_names = []
+        if data["experiment"]["profile"] == "standard":
+            missing = connection.execute(
+                "SELECT COUNT(*) FROM run r LEFT JOIN perf_metric p "
+                "ON p.run_id=r.id AND p.event_name='task-clock' "
+                "WHERE p.counter_value IS NULL"
+            ).fetchone()[0]
+            if missing:
+                examples = connection.execute(
+                    "SELECT r.id, e.scheduler, COALESCE(p.status, 'absent') "
+                    "FROM run r JOIN experiment e ON e.id=r.experiment_id "
+                    "LEFT JOIN perf_metric p ON p.run_id=r.id "
+                    "AND p.event_name='task-clock' "
+                    "WHERE p.counter_value IS NULL ORDER BY r.id LIMIT 5"
+                ).fetchall()
+                event_names = connection.execute(
+                    "SELECT event_name, COUNT(*) FROM perf_metric "
+                    "GROUP BY event_name ORDER BY COUNT(*) DESC LIMIT 12"
+                ).fetchall()
+    problems = []
+    if errors:
+        problems.append(f"foreign-key violations={len(errors)}, examples={errors[:3]}")
+    if n_experiments != expected_invocations:
+        problems.append(
+            f"experiment rows={n_experiments}, expected={expected_invocations}"
+        )
+    if n_runs != expected_runs:
+        problems.append(f"measured run rows={n_runs}, expected={expected_runs}")
+    if invalid:
+        problems.append(f"failed/incomplete measured runs={invalid}")
+    if missing:
+        problems.append(
+            f"missing/unavailable perf task-clock counters={missing}; "
+            f"examples (run_id, scheduler, status)={examples}; "
+            f"recorded event names={event_names}"
+        )
+    if problems:
+        raise RuntimeError(
+            f"Campaign database integrity failed: {database}\n"
+            + "\n".join(f"  - {item}" for item in problems)
+            + "\nMeasurements have been preserved; do not delete the database."
+        )
+
 def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> Path:
     os.chdir(ROOT)
     if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
@@ -444,22 +512,7 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> P
     except BaseException:
         print(f"Partial campaign retained: {out}", file=sys.stderr)
         raise
-    with sqlite3.connect(db) as connection:
-        errors = connection.execute("PRAGMA foreign_key_check").fetchall()
-        n_experiments = connection.execute("SELECT COUNT(*) FROM experiment").fetchone()[0]
-        n_runs = connection.execute("SELECT COUNT(*) FROM run").fetchone()[0]
-        invalid = connection.execute(
-            "SELECT COUNT(*) FROM run WHERE success<>1 OR completed_work_units<>?",
-            (int(data["workload"]["work_units"]),)).fetchone()[0]
-        missing = (connection.execute(
-            "SELECT COUNT(*) FROM run r LEFT JOIN perf_metric p "
-            "ON p.run_id=r.id AND p.event_name='task-clock' "
-            "WHERE p.counter_value IS NULL").fetchone()[0]
-            if data["experiment"]["profile"] == "standard" else 0)
-    expected_runs = (len(plan) * int(data["repetitions"]["measured_runs_per_block"])
-                     * (4 if data["experiment"]["profile"] == "deep" else 1))
-    if errors or n_experiments != len(plan) or n_runs != expected_runs or invalid or missing:
-        raise RuntimeError("Campaign database integrity check failed")
+    verify_campaign_database(out, data, len(plan))
     print(f"Complete: {out}")
     return out
 
