@@ -27,7 +27,7 @@ class StudyTests(unittest.TestCase):
                 len([c for c in config["configurations"] if c["scheduler"] == "rayon"]), 1
             )
             self.assertTrue(filename.endswith(".toml"))
-        self.assertEqual(campaigns, expand_study(self.spec, self.template))
+        self.assertEqual((campaigns, skipped), expand_study(self.spec, self.template))
 
     def test_invalid_capacity_backlog_filtered(self):
         axes = {"queue_capacities": [4, 8], "hot_first_backlogs": [1, 2]}
