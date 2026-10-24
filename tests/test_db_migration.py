@@ -2,6 +2,7 @@
 
 Tests an existing populated v9 database, not merely a freshly created schema.
 """
+import re
 import sqlite3
 import unittest
 
@@ -10,9 +11,6 @@ from experiments.common.campaign import ROOT
 
 SCHEMA = ROOT / "harness/sql/schema.sql"
 MIGRATION = ROOT / "harness/sql/migrations/010_native_crossbeam_wait.sql"
-LEGACY_VERSION = "    (9, 'Separate Threadance scheduler from worker wait policy'),\n    (10, 'Allow native Crossbeam wait policy');"
-LEGACY_POLICY = "                                                 'agave-backoff',\n                                                 'crossbeam-wait'"
-
 EXPERIMENT_INSERT = """
 INSERT INTO experiment (
     session_id, scheduler, workload, profile_mode, workers,
@@ -56,12 +54,21 @@ class NativeCrossbeamWaitStorageTests(unittest.TestCase):
 
     def test_upgrade_populated_v9_preserves_measurements_and_constraints(self):
         current = SCHEMA.read_text()
-        self.assertIn(LEGACY_VERSION, current)
-        self.assertIn(LEGACY_POLICY, current)
-        previous = current.replace(
-            LEGACY_VERSION,
-            "    (9, 'Separate Threadance scheduler from worker wait policy');",
-        ).replace(LEGACY_POLICY, "                                                 'agave-backoff'")
+        # Derive an equivalent v9 schema without coupling the test to
+        # whitespace in the current SQL formatting.
+        previous, version_edits = re.subn(
+            r",\s*\(10, 'Allow native Crossbeam wait policy'\);",
+            ";",
+            current,
+            count=1,
+        )
+        previous, policy_edits = re.subn(
+            r"(?m)^([ \t]*)'agave-backoff',\s*\n[ \t]*'crossbeam-wait'",
+            r"\1'agave-backoff'",
+            previous,
+            count=1,
+        )
+        self.assertEqual((version_edits, policy_edits), (1, 1))
         self.assertNotIn("'crossbeam-wait'", previous)
 
         self.db.executescript(previous)
