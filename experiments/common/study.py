@@ -21,6 +21,7 @@ AXES = {
     "workers", "work_units", "operations_per_work_unit",
     "certificates_per_work_unit", "delivery_modes",
     "queue_capacities", "hot_first_backlogs",
+    "schedulers", "wait_policies", "spin_durations_us",
 }
 OVERRIDES = {
     "blocks", "warmup_runs_per_block", "measured_runs_per_block",
@@ -56,7 +57,18 @@ def read_study(path: Path) -> dict:
             raise ValueError(f"axes.{key} must be a non-empty array")
         if len(set(values)) != len(values):
             raise ValueError(f"axes.{key} contains duplicates")
-        if key == "delivery_modes":
+        if key == "schedulers":
+            if any(v not in ("rayon", "bevy", "threadance", "threadance-hot-first",
+                             "threadance-hot-first-rtrb") for v in values):
+                raise ValueError("Unknown scheduler")
+        elif key == "wait_policies":
+            if any(v not in ("crossbeam-wait", "spin-then-park", "agave-backoff")
+                   for v in values):
+                raise ValueError("Unknown wait policy")
+        elif key == "spin_durations_us":
+            if any(type(v) is not int or v < 0 for v in values):
+                raise ValueError("spin durations must be nonnegative integers")
+        elif key == "delivery_modes":
             if any(v not in (
                 "all-at-once", "fixed-arrivals", "steady-arrivals",
                 "variable-arrivals", "bursty-arrivals"
@@ -77,53 +89,70 @@ def read_study(path: Path) -> dict:
 
 
 def expand_configurations(base: dict, axes: dict, workers: int) -> tuple[list[dict], list[dict]]:
+    """Cross compatible topology / wait policy / queue parameters only."""
     configs = []
     skipped = []
-    for original in base["configurations"]:
+    if "schedulers" in axes:
+        originals = [{"id": scheduler, "scheduler": scheduler}
+                     for scheduler in axes["schedulers"]]
+    else:
+        originals = base["configurations"]
+
+    for original in originals:
         scheduler = original["scheduler"]
         if scheduler in ("rayon", "bevy"):
             configs.append(copy.deepcopy(original))
             continue
 
-        capacities = axes.get("queue_capacities", [original.get(
-            "queue_capacity", base["workload"].get("queue_capacity", 1024)
-        )])
-        is_hot_first = "hot-first" in scheduler
-        backlogs = axes.get("hot_first_backlogs", [original.get("hot_first_backlog", 1)]) if is_hot_first else [None]
-        for capacity, backlog in itertools.product(capacities, backlogs):
-            if is_hot_first and backlog * workers > capacity:
-                skipped.append(dict(configuration=original["id"], workers=workers,
+        capacities = axes.get("queue_capacities", [
+            original.get("queue_capacity", base["workload"].get("queue_capacity", 1024))
+        ])
+        hot = "hot-first" in scheduler
+        backlogs = (axes.get("hot_first_backlogs", [original.get("hot_first_backlog", 1)])
+                    if hot else [None])
+        allowed_policies = (("spin-then-park", "agave-backoff")
+                            if hot else ("crossbeam-wait", "spin-then-park", "agave-backoff"))
+        policies = axes.get("wait_policies", [original.get("wait_policy", "spin-then-park")])
+        for policy, capacity, backlog in itertools.product(policies, capacities, backlogs):
+            if policy not in allowed_policies:
+                skipped.append(dict(scheduler=scheduler, wait_policy=policy,
+                                    reason="policy incompatible with queue topology"))
+                continue
+            if hot and backlog * workers > capacity:
+                skipped.append(dict(scheduler=scheduler, workers=workers,
                                     queue_capacity=capacity, hot_first_backlog=backlog,
                                     reason="backlog * workers exceeds queue capacity"))
                 continue
-            config = copy.deepcopy(original)
-            config["queue_capacity"] = capacity
-            suffix = ""
-            if "queue_capacities" in axes:
-                suffix += f"__q{capacity}"
-            if is_hot_first:
-                config["hot_first_backlog"] = backlog
-                if "hot_first_backlogs" in axes:
-                    suffix += f"__b{backlog}"
-            config["id"] += suffix
-            if config.get("wait_policy") == "agave-backoff":
-                spins = config.get("spin_us", 0)
-                if spins not in (0, [0]):
-                    raise ValueError("Agave backoff cannot be swept over spin_us")
-            configs.append(config)
+            if policy == "spin-then-park":
+                spins = axes.get("spin_durations_us", original.get("spin_us", [0]))
+                if not isinstance(spins, list):
+                    spins = [spins]
+            else:
+                spins = [0]
+            for spin in spins:
+                config = copy.deepcopy(original)
+                config["wait_policy"] = policy
+                config["queue_capacity"] = capacity
+                config["spin_us"] = spin
+                if hot:
+                    config["hot_first_backlog"] = backlog
+                # Explicit complete condition identity, including independent axes.
+                config["id"] = (f"{scheduler}__{policy}__q{capacity}"
+                                + (f"__b{backlog}" if hot else "")
+                                + (f"__s{spin}" if policy == "spin-then-park" else ""))
+                configs.append(config)
     ids = [config["id"] for config in configs]
     if len(set(ids)) != len(ids):
         raise ValueError("Duplicate expanded configuration IDs")
     if not configs:
-        raise ValueError("No configurations remain after filtering")
-    reference = base.get("analysis", {}).get("reference_configuration", base["configurations"][0]["id"])
+        raise ValueError("No compatible configurations")
+    reference = base.get("analysis", {}).get(
+        "reference_configuration", base["configurations"][0]["id"])
     if reference not in ids:
         raise ValueError(
-            f"Reference '{reference}' expands with an axis; use a fixed "
-            "reference such as Rayon or Bevy in the template"
-        )
+            f"Reference '{reference}' must identify an unexpanded baseline; "
+            "use Rayon or Bevy for a full topology/policy study")
     return configs, skipped
-
 
 def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], list[dict]]:
     axes = spec["axes"]
