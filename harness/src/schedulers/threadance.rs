@@ -1,6 +1,8 @@
 use std::{io, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use ::threadance::{AgaveBackoff, CrossbeamMpmc, CrossbeamWait, ExecuteError, SpinThenPark, ThreadPool};
+use ::threadance::{
+    AgaveBackoff, CrossbeamMpmc, CrossbeamWait, ExecuteError, SpinThenPark, ThreadPool,
+};
 
 use crate::{
     delivery::{DeliverySchedule, run_with_delivery},

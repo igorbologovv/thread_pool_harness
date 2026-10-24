@@ -143,7 +143,7 @@ where
                 ThreadanceWaitPolicy::AgaveBackoff => ::threadance::SegmentedIdle::AgaveBackoff,
                 ThreadanceWaitPolicy::CrossbeamWait => {
                     panic!("crossbeam-wait is only compatible with threadance MPMC")
-                },
+                }
             };
             let scheduler =
                 GateScheduler::new(cli.workers, cli.queue_capacity, cli.hot_first_backlog, idle)
@@ -159,7 +159,7 @@ where
                 ThreadanceWaitPolicy::AgaveBackoff => ::threadance::SegmentedIdle::AgaveBackoff,
                 ThreadanceWaitPolicy::CrossbeamWait => {
                     panic!("crossbeam-wait is only compatible with threadance MPMC")
-                },
+                }
             };
             let scheduler = RtrbGateScheduler::new(
                 cli.workers,
