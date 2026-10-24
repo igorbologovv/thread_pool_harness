@@ -70,3 +70,24 @@ This is only a small **coverage pilot**, not the complete thesis matrix: it
 uses BLS and two worker counts to confirm the configuration combinations.
 A compute-heavy study can reuse its corresponding template, after validation.
 Do not mistake preliminary pilot comparisons for confirmatory findings.
+
+## Study-wide reporting (first version)
+
+After running and analyzing completed campaigns, generate one offline report:
+
+```bash
+python3 -m experiments.common.study_report \
+  --root results/studies/all-pools-pilot/campaigns
+```
+
+This creates `study_report.html` (SVG paired-CI plots and descriptive
+statistics) and `study_report.json` (all numerical comparisons). The report
+runs the existing per-campaign analyzer and refuses incomplete campaigns.
+It does **not** perform any benchmarks. Bootstrap paired comparisons still
+use 20 randomized blocks for the thesis study; the two-block
+`full_pool_pilot.toml` is a functional test only.
+
+Current limitations: no automatic run-order diagnostics or multimodality
+detection, no cross-workload normalization, and no automatic claim of a
+winning scheduler. Full scientific conclusions require examining raw runs,
+measurement quality, and confidence interval precision.
