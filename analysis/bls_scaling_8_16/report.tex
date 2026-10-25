@@ -1,0 +1,232 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=19mm,top=20mm,bottom=20mm,headheight=15pt]{geometry}
+\usepackage{fontspec}
+\setmainfont{Noto Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont[Scale=.82]{DejaVu Sans Mono}
+\usepackage{graphicx,xcolor,booktabs,tabularx,array,amsmath,caption,fancyhdr,enumitem,hyperref}
+\definecolor{ink}{HTML}{203347}
+\definecolor{teal}{HTML}{168B87}
+\definecolor{muted}{HTML}{627589}
+\definecolor{paper}{HTML}{EEF4F5}
+\hypersetup{colorlinks=true,linkcolor=teal,urlcolor=teal,pdftitle={Threadance BLS: physical cores, SMT and arrival dynamics},pdfauthor={Reproducible performance investigation}}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{muted}THREADANCE / BLS SCALING}
+\fancyhead[R]{\small\sffamily\color{muted}RESEARCH NOTE · 25 OCTOBER 2026}
+\fancyfoot[L]{\scriptsize\sffamily\color{muted}20 randomized blocks · archived measurements only}
+\fancyfoot[R]{\sffamily\color{ink}\thepage}
+\renewcommand{\headrulewidth}{.3pt}
+\setlength{\parindent}{0pt}\setlength{\parskip}{7pt}
+\setlength{\emergencystretch}{2em}
+\captionsetup{font=small,labelfont={bf,sf},skip=5pt}
+\setlist[itemize]{leftmargin=1.2em,itemsep=4pt,topsep=3pt}
+\newcommand{\page}[2]{\newpage\pdfbookmark[0]{#1}{#2}{\sffamily\color{ink}\fontsize{21}{25}\selectfont #1\par}\vspace{4pt}}
+\newcommand{\sub}[1]{\vspace{5pt}{\sffamily\bfseries\color{ink}#1\par}\vspace{1pt}}
+\newcommand{\take}[1]{\vspace{4pt}\noindent\colorbox{paper}{\parbox{\dimexpr\linewidth-2\fboxsep}{\vspace{5pt}\sffamily\color{ink}#1\vspace{5pt}}}\par\vspace{3pt}}
+\newcommand{\fig}[2]{\begin{center}\includegraphics[width=\linewidth]{figures/#1.pdf}\captionof{figure}{#2}\end{center}}
+\newcommand{\meas}{\textbf{Measured.} }
+\newcommand{\hyp}{\textbf{Explanation consistent with the evidence.} }
+\newcommand{\unknown}{\textbf{Unverified.} }
+\begin{document}
+\fontsize{10.3}{14}\selectfont\color{ink}
+\thispagestyle{empty}
+\pdfbookmark[0]{Principal findings}{findings}
+{\sffamily\color{teal}\large PERFORMANCE INVESTIGATION / 01\par}
+\vspace{12mm}
+{\sffamily\bfseries\fontsize{34}{38}\selectfont Threadance BLS\par}
+\vspace{4mm}
+{\sffamily\fontsize{23}{28}\selectfont Physical cores, SMT\par and the cost of waking workers\par}
+\vspace{7mm}
+{\large A focused investigation of Rayon, Bevy, shared MPMC and segmented RTRB at 8 and 16 workers, with matched historical context at 2 and 4.\par}
+\vspace{6mm}
+\take{The strongest distinction is how schedulers spend CPU time under different arrival patterns. Saturated throughput is similar; occupancy, completion tails and instruction counts tell different stories.}
+\sub{Five findings worth carrying into pool design}
+\begin{enumerate}[leftmargin=1.5em,itemsep=9pt]
+\item \textbf{SMT yields a small throughput gain at a large CPU cost.} For all-at-once Rayon, 8 to 16 workers gives @@smt_speed@@ speedup and increases CPU time by @@smt_cpu@@. The four architecture anchors show the same broad limit.
+\item \textbf{RTRB's CPU savings persist and become substantial in bursts.} At 16 workers, bursty 1500 WU/s, q64/b2/SP0 versus Rayon saves @@r2_cpu@@ CPU, for @@r2_elapsed@@ ms later completion.
+\item \textbf{Fewer instructions need not mean less CPU time.} At 16 workers, fixed 1500 WU/s, MPMC q64/SP0 uses @@m_cpu@@ more CPU versus Rayon despite changes of @@m_cycles@@ in cycles and @@m_inst@@ in instructions.
+\item \textbf{Explicit spinning has no supported completion benefit here.} MPMC q64, SP100 versus SP0, fixed 1500 WU/s at 16 workers adds @@spin_cpu@@ CPU time. None of the 40 examined spin elapsed contrasts excludes zero in the simultaneous intervals.
+\item \textbf{Burstiness raises CPU cost even as context switches fall.} At 16 workers, Rayon bursty versus fixed 1500 WU/s increases CPU @@burst_cpu@@ and reduces context switches @@burst_ctx@@, with essentially unchanged retired instructions.
+\end{enumerate}
+\vfill
+{\small All bracketed intervals are 95\% pointwise block-bootstrap intervals unless marked simultaneous. Effects are conditional on this host and collection; causal mechanisms are separated from observations. SP0/40/100 denotes SpinThenPark in microseconds.\par}
+
+\page{What was compared, and how}{design}
+\sub{Scope and historical continuity}
+The prior 110-page report's executive summary, metric audit and conclusions were read before analysis. It found CPU/completion trade-offs at 2/4 workers, no general corrected elapsed advantage for Threadance, and costs from spinning. This note extends those mechanisms rather than repeating its exhaustive comparisons.
+
+The new archive contains \textbf{6,000 physical runs}: six campaigns, 15 exact configurations, 20 randomized blocks, two measurements per condition/block. Each worker count has all-at-once, fixed and bursty campaigns; paced campaigns include 900 and 1500 WU/s. The historical subset contains 6,000 runs for the same 15 configuration identifiers. No q8 observations enter a cross-worker estimate.
+
+Each batch verifies 1,000 cached BLS work units: 2,000 validator keys, 1,600 signers per certificate, one certificate per work unit, seed 1. Each task aggregates public keys and verifies a signature sequentially; the task body spawns no nested parallel work. The work is approximately millisecond-scale. No per-task service-time distribution was recorded.
+
+\sub{Host and collection boundaries}
+AMD Ryzen 7 5700X: 8 physical cores, 16 logical CPUs, one NUMA node, boost enabled. Workers are \textbf{not pinned}. Eight workers therefore means a pool sized to the physical-core count, not a verified one-thread-per-core placement. Sixteen workers can occupy SMT siblings. The producer and other system activity also need CPU time.
+
+New campaigns ran 25 October, 12:55--15:57 UTC, with 1 s requested settling. Historical campaigns ran 24--25 October with 3 s settling, including known 84-minute and 8.4-hour interruptions. Collection time and settling are confounded with worker count. The archived binary SHA-256 is identical across all twelve campaigns; repository metadata differs and includes dirty historical state. This reduces binary variation, not host-state confounding.
+
+\sub{Inference: blocks, not individual measurements}
+The two measurements are averaged within each randomized block. The existing \texttt{bls\_full} deterministic weights and paired-effect implementation are imported directly: 20,000 resamples, seed 20261025. Within a campaign, shared block resampling preserves configuration and arrival-seed pairing. Different campaigns are resampled independently, even when block numbers and seeds match. Percent changes are ratios of grand block means; speedup is mean elapsed at the lower worker count divided by mean elapsed at the higher count.
+
+Raw distributions, block means, paired differences and acquisition order were inspected \emph{before} effect estimation. Mixture and temporal routines are reused on a restricted diagnostic set. Sensitivities retain short-range dependence with circular block lengths 3/5 and inspect halves, influential omissions and BCa intervals. All runs remain in primary estimates.
+
+\take{This is an exploratory, retrospective study. Pointwise 95\% intervals describe uncertainty, not family-wide discovery guarantees. A 390-endpoint elapsed/CPU family uses the prior report's approximate centered maximum-statistic bootstrap correction. Major CPU and SMT effects survive it; hardware-counter intervals and historical interactions remain pointwise.}
+
+\page{Architecture: the paths actually exercised}{architecture}
+\fig{01_architecture}{Implementation facts from the harness and locked dependencies. Arrows show submission to execution, not measured cache transfers. Every path shares the BLS dataset and atomic completion protocol. All Threadance comparisons in this report use q64.}
+\sub{Rayon and Bevy are not interchangeable stealing schedulers}
+Rayon 1.12.0 / rayon-core 1.13.0 receives \texttt{pool.spawn} from the submitting thread. \texttt{inject\_or\_push} therefore takes the external injector path. An idle worker checks its own deque, probes peers, then takes one injected job. This harness does not recursively populate worker deques. The method name \texttt{Injector::steal} denotes retrieval from the injector; it is not evidence of a successful peer steal.
+
+Bevy Tasks 0.19.1 uses async-executor 1.14.0 in this build. A runner checks its local bounded queue, pulls from the global queue and refills locally, then tries peer queues. Its task is a detached future containing synchronous BLS; the body does not yield. Global refill and peer balancing are distinct operations.
+
+\sub{Bounded queues also determine producer behavior}
+MPMC uses Crossbeam Channel 0.5.17: one bounded channel, blocking producer send, any worker receiving. RTRB 0.4.0 has one producer/consumer pair per worker and no stealing. The gate scans low worker indices first; backlog sets both ring capacity and routing cadence. Actual queued slots are $w\times b$: 8/16 for b1 and 16/32 for b2 at 8/16 workers. q64 is a feasibility bound; it is not the allocated RTRB capacity.
+
+\take{A topology comparison changes routing, queued capacity, wake addressing and producer blocking together. It cannot identify a pure SPSC-versus-MPMC queue effect.}
+
+\page{Distributions before precision}{diagnostics}
+\fig{02_diagnostics}{ECDFs preserve tails without a bandwidth choice. Small translucent dots are physical runs; lines are block means. Horizontal positions in panels D/E include acquisition order within each block. Panel F shows the important paired CPU difference, not an unpaired marginal distribution.}
+\meas Eight-worker all-at-once Rayon has a 238.14 ms raw run and a 225.00 ms block mean, against a 208.79 ms grand mean. Several pools slow in blocks 2--3. For Rayon's raw elapsed, the two-component BIC advantage is 51.8, but the small component has weight 1/40 and dip $p=0.56$: the fit isolates one excursion. RTRB b1's two slow block means also attract a separate component. This does not establish two persistent operating modes.
+
+At 16 workers, isolated tails remain. Some series drift modestly: CrossbeamWait all-at-once elapsed rises about 0.05 ms/block. The bursty RTRB b2--Rayon CPU difference is negative in all 20 blocks; first/last-half means are $-632.1/-629.7$ ms. Its lag-1 correlation is 0.026, although an order association is visible (partial rank $r=0.48$, unadjusted $p=0.036$). These small-sample screens cannot certify independence.
+
+\sub{What survives the diagnostic concerns}
+Rayon's 8-to-16 elapsed change is @@smt_elapsed@@ ms; circular length-3 resampling gives $[-19.87,-15.57]$ ms. Removing the selected early blocks 2--3 gives $[-16.95,-15.20]$ ms. RTRB b2's 16-worker burst CPU saving gives $[-653.29,-611.76]$ ms with length 3 and $[-655.69,-612.75]$ ms with BCa. Small scheduler rankings are less stable than these large resource effects.
+
+\unknown Twenty blocks cannot rule out dependence, drift or unobserved regimes. Multimodality itself does not invalidate a block bootstrap; dependence and nonstationarity determine whether nominal coverage is credible. Sensitivities support effect direction, not exact universal coverage.
+
+\page{SMT: more occupancy than throughput}{smt}
+\fig{03_scaling}{Pointwise 95\% intervals. Dashed 2--4--8 connections span historical campaigns with different settling and collection times; solid 8--16 connections still compare independent campaigns. Panel D is Rayon only. Summed thread cycles overlap on SMT siblings and are not physical-core cycle capacity.}
+\meas All-at-once Rayon falls from 208.79 to 191.43 ms; CPU time rises from 1,663.63 to 3,007.45 ms. MPMC q64/SP0 gives @@mpmc_speed@@ speedup and @@mpmc_smt_cpu@@ more CPU time. Bevy and RTRB q64/b1/SP0 give speedups of 1.085 and 1.086. Their intervals overlap, and paired-contrast changes against Rayon do not establish a scaling winner among these four anchors.
+
+Rayon's batch throughput per configured logical worker becomes 54.5\% of the 8-worker value (95\% CI 54.1--55.1\%): a 45.5\% reduction. Process CPU equivalents rise from 7.97 to 15.71. Instructions/WU change only @@smt_inst@@, while cycles/WU rise @@smt_cycles@@, IPC falls from 2.97 to 1.72 and the effective-frequency proxy falls from 4.34 to 4.14 GHz.
+
+\hyp Shared physical execution resources under SMT are consistent with this near-constant instruction stream taking far more summed thread cycles. The modest GHz-proxy reduction is too small algebraically to account for the CPU increase alone. This is a resource-efficiency limit common to all four anchors, not evidence that one queue suddenly executes much more scheduler code.
+
+\unknown Unpinned placement, power management and collection time prevent a causal isolation of SMT. No core residency, run queue, temperature or per-thread instruction traces were collected. The practical choice is conditional: approximately 8\% less batch elapsed costs approximately 80\% more process CPU time here; CPU time is not electrical energy.
+
+\page{Does stealing earn its complexity?}{stealing}
+\take{There is no large measured throughput premium for Rayon's work-balancing machinery on this uniform external-submission workload. There is also no evidence that stealing is intrinsically wasteful. The archive records neither attempts nor successes.}
+\sub{Saturated comparisons leave little room for a large balancing benefit}
+\meas At 16 workers all-at-once, MPMC q64/SP0 versus Rayon changes elapsed by @@m_all_elapsed@@ ms and CPU by @@m_all_cpu@@ ms. Bevy changes elapsed by @@bevy_all_elapsed@@ ms. The shared-channel implementation matches these reference makespans within sub-millisecond point estimates despite having no peer work stealing.
+
+RTRB q64/b1/SP0 is modestly slower: @@r_all_elapsed@@ ms, or @@r_all_elapsed_pct@@; CPU rises @@r_all_cpu@@ ms. The simultaneous elapsed interval is $[0.295,2.359]$ ms. Its average context switches are 1,507 versus Rayon's 85; migrations are 148 versus 5.5. MPMC has 225 switches but still similar elapsed and CPU to Rayon. The count of switches is therefore not a ranking of useful work or scheduling efficiency.
+
+\hyp Demand-based consumption from the shared MPMC queue already balances this coarse, similar-work task stream. RTRB chooses a destination using free ring capacity, not the worker's remaining execution time. A queued task cannot move when its owner is delayed. Together with more producer-capacity waits and addressed wakes, this offers a plausible route to a small completion penalty. No per-worker load distribution or final-task trace exists to decide between imbalance, wake delay and backpressure.
+
+\sub{Paced arrivals expose additional search and wake costs}
+\meas At 16 workers fixed 1500 WU/s, Rayon retires 21.783 million instructions/WU, Bevy 21.439 million and MPMC q64/SP0 21.420 million. MPMC versus Rayon changes instructions by @@m_inst@@ and branch misses/WU by @@m_branch@@. Yet Rayon completes slightly sooner than MPMC: the latter's excess is @@m_paced_elapsed@@ ms, and MPMC uses \emph{more} CPU time (next page).
+
+\hyp Rayon's peer probes before injector retrieval, randomized search, wake accounting and 32 yield rounds before announcing sleep are plausible contributors to extra paced instructions and branches. Bevy checks the global queue before peers and batches refills. These code facts suggest different search paths; they do not attribute a measured instruction or branch miss to a specific function.
+
+\unknown Successful peer stealing may be rare because tasks are externally injected and do not create child jobs. Even an unsuccessful search can cost instructions, but its frequency and cost are unknown. The smallest decisive follow-up is worker-local counters separating peer attempts, retries, successes and injector takes, plus task starts/finishes and worker IDs. A short sampled call graph can then estimate time in search, waits and BLS. Avoid a global instrumentation atomic that creates new contention.
+
+\page{CPU time is not an instruction counter}{counters}
+\fig{04_counter_disagreement}{Paired ratios of grand means versus Rayon, with pointwise 95\% intervals. All Threadance settings are q64/SP0; RTRB uses b1. A lower retired-instruction count can coexist with a higher task-clock cost. The GHz quantity is a process aggregate proxy, not a measured core-frequency trace.}
+\sub{Surprising finding 1: the CPU ranking can reverse the cycle ranking}
+\meas At 16 workers, fixed 1500 WU/s, MPMC q64/SP0 versus Rayon uses @@m_cpu@@ more CPU time, with changes of @@m_cycles@@ in cycles/WU and @@m_inst@@ in instructions/WU. The GHz proxy is 3.99 versus 4.40. Bevy changes CPU time by @@bevy_cpu@@ relative to Rayon, while having more instructions/WU than MPMC. These discrepancies are repeatable within randomized blocks.
+
+RTRB q64/b1/SP0 versus matched MPMC saves @@r_m_fixed_cpu@@ CPU time. The cycle difference is only @@r_m_fixed_cycles@@, the instruction difference @@r_m_fixed_inst@@, and the GHz proxy rises @@r_m_fixed_freq@@. The corresponding 8-worker CPU saving is @@r_m8_cpu@@, with similarly modest cycle and instruction changes.
+
+\sub{An accounting identity, not a causal decomposition}
+For an individual run, with $I$ instructions, $C$ cycles and $T$ CPU seconds,
+\[ T=\frac{I}{\mathrm{IPC}\,f_{\mathrm{eff}}},\qquad \mathrm{IPC}=I/C,\quad f_{\mathrm{eff}}=C/T. \]
+Thus fewer retired instructions alone cannot explain the CPU-time savings. Execution efficiency and cycles per CPU-time unit differ too. The same identity can be applied to aggregate totals; products of separately averaged per-run ratios need not equal it exactly.
+
+\hyp Wake distribution, active-thread concurrency, frequency policy and stalls can all change this accounting. Queue locality and coherence are possible contributors to stalls, not measurements in this archive. Since perf brackets a slightly wider interval than elapsed, control handshakes and wrapper work also enter counters. The event audit finds complete counters with 100\% running time, so recorded multiplexing does not explain these differences. It does not certify perfect counter semantics or isolate worker-only overhead.
+
+\page{RTRB buys CPU efficiency with a tail}{tradeoff}
+\fig{05_tradeoff}{Paired pointwise 95\% intervals against Rayon. Circles are 8 workers; squares are 16. Orange segments connect b1 to b2 within the same campaign. SP0 and q64 throughout. Horizontal values are whole-batch completion differences, not per-task latency.}
+\meas At 16 workers, bursty 1500 WU/s, RTRB q64/b2/SP0 uses 1,734.08 CPU ms against Rayon's 2,365.00: @@r2_cpu@@. Completion increases @@r2_elapsed@@ ms, from 668.30 to 670.45 ms. Simultaneous absolute intervals are $[-672.24,-589.60]$ CPU ms and $[1.626,2.687]$ elapsed ms. At 8 workers the same configuration saves @@r2_8_cpu@@ CPU for @@r2_8_elapsed@@ ms later completion.
+
+RTRB b1 versus MPMC SP0 at 16-worker bursty 1500 saves @@r_m_burst_cpu@@ CPU for @@r_m_burst_elapsed@@ ms later completion. At fixed 1500 it saves @@r_m_fixed_cpu@@ CPU for @@r_m_fixed_elapsed@@ ms later completion. AgaveBackoff shows the same large topology pattern; CrossbeamWait has no compatible RTRB implementation and is never used as a matched-topology contrast.
+
+\hyp Low-index gate routing can concentrate sparse work on a subset of workers; a larger backlog permits more queued work behind an already busy worker. This may retain hot state and limit simultaneous SMT use, while delaying the last few tasks. The archive supports the CPU/completion trade-off, but contains no worker assignment trace proving concentration or load imbalance.
+
+\sub{The observed tail is not just a drain-metric illusion here}
+For 16-worker bursty 1500, the planned final offset is 666 ms. Rayon completion excess is 2.297 ms; RTRB b2 is 4.453 ms. Final pre-submission lateness is 0.051/0.050 ms respectively, so the measured final drain also rises (2.246 to 4.402 ms). The final timestamp is similarly placed in this example; earlier producer blocking remains unmeasured. A roughly 2 ms batch-completion allowance may justify the CPU saving; applications need their own task-latency measurements before adopting that trade-off.
+
+\page{Spinning and the economics of waking}{wait}
+\fig{06_spin}{40 and 100 µs versus 0 µs within the same queue, backlog and campaign. Intervals are the approximate simultaneous 95\% elapsed/CPU family intervals, not pointwise intervals. RTRB uses b1. The all-at-once spin contrasts also fail to establish a completion benefit.}
+\meas MPMC q64 at 16-worker fixed 1500 adds @@spin_cpu_abs@@ CPU ms for SP100 versus SP0, or @@spin_cpu@@. The elapsed effect is @@spin_elapsed@@ ms, with simultaneous interval $[-0.089,0.269]$ ms. At 8 workers the CPU increase is @@spin8_cpu@@. SP40 also commonly costs CPU. These effects survive half-sample, moving-block and BCa checks in the principal fixed-1500 comparison.
+
+RTRB's spin cost is smaller and arrival-dependent: SP100 versus SP0 at 16-worker fixed 1500 adds @@r_spin_fixed@@ CPU ms; in bursty 1500 it adds @@r_spin_burst@@ CPU ms. Neither establishes a completion benefit. The 0 µs setting removes the explicit timed spin, not every possible library-internal probe.
+
+\sub{AgaveBackoff and CrossbeamWait}
+AgaveBackoff executes up to 127 spin-loop hints and four yield stages before blocking. MPMC then uses a shared atomic wake event; RTRB uses addressed thread park/unpark. CrossbeamWait blocks via channel select with shutdown and has no explicit wake-one operation. At 16-worker fixed 1500, MPMC CW versus SP0 changes CPU by @@cw_cpu@@ ms; its simultaneous interval includes zero. AB versus SP0 is @@ab_cpu@@ ms. The data do not establish a robust policy winner among these short/no-timed-spin choices.
+
+\take{Reducing context switches is not a sufficient objective. For MPMC fixed 1500 at 16 workers, SP100 actually raises mean switches from 2,092 to 2,119 while raising CPU cost. Within-configuration switch/CPU correlations can be positive, but paired policy-change correlations are weaker and do not identify causal savings.}
+
+\page{Arrival dynamics change the CPU bill}{arrivals}
+\fig{07_arrivals_history}{Panel A independently resamples fixed and bursty campaigns; pointwise 95\% intervals. Panel B uses exact q64/SP0 within-campaign contrasts against Rayon, then displays them across worker counts. Dashed historical connections are descriptive, not a randomized worker-count experiment.}
+\sub{Surprising finding 2: fewer switches, more CPU, almost the same instructions}
+\meas For Rayon at 16 workers and 1500 WU/s, bursty versus fixed arrivals add @@burst_cpu_abs@@ CPU ms (\textbf{@@burst_cpu@@}), @@burst_cycles@@ cycles/WU and @@burst_inst@@ instructions/WU. Context switches \emph{fall} @@burst_ctx@@. MPMC q64/SP0 similarly raises CPU @@m_burst_cpu@@ with an instruction change of @@m_burst_inst@@. Thus a burst penalty cannot be explained as simply performing more BLS work or more context switches.
+
+\hyp Bursts can temporarily activate many workers despite low average offered load, creating shared-core contention and different frequency/idle histories. RTRB's routing may limit this concurrent activation. Between 8 and 16 workers at bursty 1500, RTRB b2 CPU changes @@r2_paced_scale@@ ms, while Rayon rises @@ray_paced_scale@@ ms. This bounds the observed RTRB change tightly; it is not a formal equivalence test or proof of the routing mechanism.
+
+\sub{The historical comparison agrees in direction, with an explicit confound}
+At bursty 1500, RTRB q64/b2/SP0 versus Rayon changes CPU by $+1.72$ ms at 2 workers (CI $[-3.44,6.14]$), $-52.80$ at 4 (CI $[-61.02,-44.38]$), $-358.67$ at 8 and $-630.92$ at 16. The change in the within-campaign contrast from 4 to 16 is @@history_cpu@@ ms. Omitting historical interrupted block 3 still gives @@history_omit@@ ms. This removes neither the 3 s/1 s settling difference nor possible scheduler-specific host-state effects. Raw cross-era levels are weaker evidence than these matched contrasts.
+
+\unknown Fixed-to-bursty campaigns were also collected at different times. Repetition at both 8 and 16 workers and the within-campaign topology contrasts make the arrival explanation credible, but no arrival-process treatment was randomized between campaigns.
+
+\page{Cache mechanisms: facts and hypotheses}{cache}
+\sub{What the source establishes}
+\begin{tabularx}{\linewidth}{@{}p{.19\linewidth}X@{}}
+\toprule
+Structure & Memory and synchronization facts\\\midrule
+MPMC & Crossbeam's bounded array stores adjacent task slots with atomic stamps. Head and tail are separately cache-padded; consumers update the common head with compare-exchange. Channel waiting also has synchronization state.\\[5pt]
+RTRB & Each worker owns one consumer; producer and consumer cache cursor values locally. Shared head/tail atomics are padded and publish with release/acquire. Rings are separately allocated. Every successful pop also performs a SeqCst increment on the \emph{same} backpressure cookie.\\[5pt]
+Wake paths & MPMC SP/AB share a cookie and waiter counters, with fences and atomic-wait. RTRB addresses a registered thread handle and its park token. Registered handles are stored in an array; their presence does not prove hot adjacent writes.\\[5pt]
+Common work & Boxed Threadance closures, Rayon jobs and Bevy runnables add indirection. All tasks share read-only BLS key/input storage, Arc reference counts and the harness completion counter. These common accesses remain potential sources of traffic.\\\bottomrule
+\end{tabularx}
+
+\sub{What the counters actually say}
+\meas At fixed 1500 and 16 workers, RTRB b1/SP0 versus MPMC SP0 has 3.35 versus 199.3 migrations per batch, 1,149.9 versus 2,092.2 switches, IPC 2.986 versus 2.907, and 0.087\% versus 0.156\% branch misses. The paired cycle reduction is @@r_m_fixed_cycles@@. At all-at-once 16 workers, however, RTRB has \emph{more} migrations (148.1 versus MPMC 8.3) and slightly higher CPU and elapsed. A locality claim based on only one arrival regime would be misleading.
+
+\hyp Owner-only rings avoid a competing-consumer head update and may preserve worker/data reuse. Conversely, low-index routing can leave work behind a delayed owner; short rings and the shared backpressure epoch can create producer waits and true sharing. Rayon's injector and Bevy's global refill have different metadata and pointer-access patterns. These are competing explanations, not measured cache effects.
+
+\sub{True sharing must not be mislabeled false sharing}
+Updating the same MPMC head, completion counter or RTRB backpressure cookie is \emph{true sharing}. False sharing would require independent hot fields on the same cache line. Padded queue cursors already mitigate one obvious candidate in both queue families. Adjacent slots or wake metadata are candidates only: actual addresses, access histories and traffic were not captured. The Rust source does not establish that such fields occupied one hot line in a measured process.
+
+\take{No cache-miss or coherence counters were recorded. Lower cycles, higher IPC, fewer migrations or fewer branch misses cannot demonstrate locality, false sharing, cache-line bouncing or coherence traffic. They also cannot quantify how much of total time belongs to scheduling rather than BLS execution.}
+
+\page{What the measurements cannot yet prove}{limits}
+\sub{Minimal follow-ups that distinguish the competing explanations}
+\textbf{1. Separate SMT placement from scheduler policy.} Repeat only the four architecture anchors, all-at-once, on 8 explicitly distinct physical cores and on both siblings of those cores. Record per-worker task counts, busy intervals and CPU IDs. Log producer blocking and the last few task completions. Use the same settling interval and interleave the two placements within randomized blocks. This discriminates shared-core limits from migration and tail imbalance without a broad parameter search.
+
+\textbf{2. Separate misses from frequency and active concurrency.} First restrict to MPMC q64/SP0 versus RTRB q64/b1/SP0, fixed and bursty 1500, at 16 workers. Add one short perf-stat pass containing cycles, instructions, \texttt{l1-dcache-load-misses} and \texttt{l2\_cache\_misses\_from\_dc\_misses}, with task-clock. Normalize by completed WU. Add the corresponding access denominator only if needed for a miss-rate claim; otherwise report counts. Use a separate small pass for supported frequency-reference events or APERF/MPERF, aligned with busy intervals. Check per-thread/core aggregation and overlap under SMT before interpreting them.
+
+\textbf{Support checked, not assumed.} The local \texttt{perf list --details} advertises those L1/L2 names; sysfs exposes CPU, IBS Op and IBS Fetch PMUs. The current IBS Op format has \texttt{cnt\_ctl} and \texttt{swfilt}, not a latency-filter parameter. The listing and sysfs inspection are archived. Listing does not prove that events count correctly: before a future measurement, validate event opening, nonzero behavior on a suitable control and percentage running; split passes if counters multiplex. No performance collection was run for this investigation. [1,2]
+
+\textbf{3. Distinguish cache misses from coherence and false sharing.} Generic \texttt{cache-misses} is not a portable coherence metric; on this perf listing it resolves to CPU event \texttt{0x64/0x09}, not an assertion of LLC semantics. Check the family/model-specific PPR and kernel mapping. Do not prescribe Intel HITM events. \textbf{Perf documents that c2c is unsupported on Zen 3}, despite IBS exposure; an IBS PMU alone is insufficient evidence of c2c capability. [3]
+
+A short supported IBS Op sample may localize costly loads if its data-source fields are usable on this host; validate that before interpreting it. To test the known shared epoch directly, a separate future experimental branch can shard or remove its updates when safe, or compare padded versus original independent fields while keeping routing and semantics fixed. Measure the matched code change and queue/wake counters. Such a result would test a mechanism; a miss count alone would not prove false sharing. No Rust changes are made here.
+
+\textbf{4. Quantify stealing rather than infer it.} Add per-worker peer-attempt/success/retry counters and separate external-injector/global-refill counts; record task worker IDs and completion times. One short call-graph sample then tests whether search/wake code occupies meaningful CPU time. Equal work counts with long per-worker tails suggest service/placement effects; skewed counts with idle workers and queued tasks suggest balancing limitations.
+
+\sub{Drain and latency remain restricted constructs}
+For paced delivery, $E$ is batch elapsed, $A$ the final \emph{pre-submission} timestamp and $T=(1000-1)/\lambda$ the planned final offset. Recorded drain $D=E-A$; lateness $L=A-T$; completion excess $X=E-T=D+L$. Blocking can move time into $L$ and shrink $D$ without improving $E$. No post-acceptance timestamp or task response-time percentile is available. Bursty gaps use Weibull shape 0.5 rescaled to the same $T$; this is not an unconditioned renewal process.
+
+\page{Practical conclusions and reproducibility}{reproduction}
+\sub{Decisions justified by this archive}
+For saturated BLS batches, 8 workers are materially more CPU-efficient; 16 buy a modest makespan reduction. Rayon, Bevy and MPMC share the broad scaling ceiling. MPMC q64/SP0 is a credible simple scheduling baseline, but the evidence does not justify removing stealing from workloads with heterogeneous or nested tasks.
+
+For paced workloads, RTRB q64/b1 or b2 with no timed spin can save substantial process CPU at the cost of approximately sub-millisecond to a few-millisecond later batch completion. Backlog 2 is especially attractive in the observed bursts if that completion allowance is acceptable. It is not universally best: all-at-once RTRB has a modest penalty, and fixed-arrival backlog savings can be small. Choose a completion requirement first, then compare resource use.
+
+The strongest explanatory boundary is between \emph{retired work} and \emph{time occupying CPUs}. Stealing/search code can explain some extra instructions in paced Rayon, yet cannot by itself explain why fewer-instruction MPMC consumes more CPU than Rayon under fixed arrivals. Active concurrency, wait/wake behavior, frequency and stalls need direct separation. Cache and coherence mechanisms remain hypotheses.
+
+\sub{Audit and reproduction}
+The extraction and historical-cache audit passed 217 checks: read-only SQLite integrity, randomized plan reproduction, run/configuration identity, paired schedules, raw perf/SQL agreement, 100\% counter running time, completion and archived elapsed/drain consistency. All 6,000 new observations are retained. Historical counters are independently checked against SQLite for the exact 6,000-run matching subset; the historical statistical report is not regenerated.
+
+Run \texttt{python analysis/bls\_scaling\_8\_16/run.py} with dependencies from the existing analysis environment (\texttt{analysis/bls\_full/requirements.txt}). The pipeline imports the prior study's common utilities, paired-effect function and shape/temporal diagnostics. Its cached historical raw table is a documented input. Outputs include the source-derived PDF, seven vector figures, focused contrasts, sensitivities, source hashes and an independent validation record. Only analysis source is committed; original archives, historical reports, Rust and benchmarks remain unchanged.
+
+Validation independently indexes bootstrap draws, checks original SQL and input SHA-256 hashes, and checks PDF structure and page bounds. Rendered pages are visually inspected. Rebuilding cannot recover unobserved host state or make cross-campaign comparisons causal.
+
+\sub{Implementation evidence}
+Harness: delivery and perf-control modules, the four scheduler wrappers, gate-RTRB implementation and BLS workload. Threadance revision \texttt{7435d611}: \texttt{queue.rs}, \texttt{wake.rs}, \texttt{segmented.rs}. Locked libraries: rayon-core 1.13.0 \texttt{registry.rs} and sleep module; crossbeam-channel 0.5.17 array channel; RTRB 0.4.0 ring implementation; Bevy Tasks 0.19.1 and async-executor 1.14.0. Exact paths and SHA-256 values are recorded in \texttt{tables/source\_hashes.csv}; source inspection establishes implementation facts, not sampled execution paths.
+
+\sub{Primary documentation consulted}
+{\small
+[1] Linux perf maintainers, \href{https://man7.org/linux/man-pages/man1/perf-stat.1.html}{perf-stat(1)}: process attachment, control and running-time reporting.\par
+[2] Linux perf maintainers, \href{https://man7.org/linux/man-pages/man1/perf-list.1.html}{perf-list(1)}: event discovery, raw encodings and PMU constraints.\par
+[3] Linux perf maintainers, \href{https://man7.org/linux/man-pages/man1/perf-c2c.1.html}{perf-c2c(1)}: architecture support and the Zen 3 exclusion. Accessed 2026-10-25.\par}
+\end{document}
