@@ -1,0 +1,31 @@
+# Follow-up BLS scaling study on the same 1,000-work-unit cached dataset.
+# Original 2/4-worker campaigns remain unchanged (3-second settling).
+# This is a distinct 1-second-settling acquisition series; compare historical
+# worker counts with care and inspect temporal/host-state sensitivity.
+#
+# Only supported schedulers: Rayon/Bevy references, Threadance MPMC, RTRB.
+# The obsolete non-RTRB "threadance-hot-first" is deliberately excluded.
+# For RTRB, queue_capacity is a feasibility bound; actual ring sizes are set
+# by hot_first_backlog (per-worker backlog), not by queue_capacity.
+
+[study]
+name = "bls-scaling-8-16"
+template = "experiments/queue_topology/experiment.toml"
+output_dir = "experiments/generated/bls-scaling-8-16"
+output_root = "results/studies/bls-scaling-8-16/campaigns"
+max_invocations = 3500
+
+[axes]
+workers = [8, 16]
+schedulers = ["rayon", "bevy", "threadance", "threadance-hot-first-rtrb"]
+wait_policies = ["crossbeam-wait", "spin-then-park", "agave-backoff"]
+spin_durations_us = [0, 40, 100]
+queue_capacities = [64]
+hot_first_backlogs = [1, 2]
+delivery_modes = ["all-at-once", "fixed-arrivals", "bursty-arrivals"]
+
+[overrides]
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 1.0
