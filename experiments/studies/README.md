@@ -117,3 +117,48 @@ does not exhaust every conceivable workload size or BLS task granularity.
 A separate compute-heavy study will address fixed-total-work granularity
 comparisons. Full-study run count is 8,800 invocations (20 blocks).
 Check disk space, profiling access, and machine stability before the full run.
+
+
+## Advanced BLS PMU acquisition (second round)
+
+Specification: `experiments/studies/bls_advanced_perf.toml` (separate from
+historical 2/4 and 8/16 campaigns). It covers 2, 4, 8, and 16 workers;
+all-at-once, fixed 900/1500, bursty 900/1500; Rayon, Bevy, shared-MPMC
+Threadance, and RTRB Threadance. Spin-then-park durations are 0/20/40/80
+microseconds. Each condition has 20 randomized blocks, two recorded runs
+**per perf pass** (four measured runs per condition per block), and the
+existing one-full-run warm-up **once per configuration**. There is no settling
+sleep. The pass order is reversed in even-numbered blocks.
+
+Two PMU passes avoid multiplexing a six-event hardware group on the
+Ryzen 7 5700X with NMI watchdog enabled:
+
+- `cpu-cache`: cycles, instructions, cache references/misses, L1D load
+  misses.
+- `l1-branches`: cycles, L1D loads/misses, branches, branch misses.
+
+Both include software task-clock, context switches, migrations and page
+faults. Hardware events use `:uk` (user and kernel). A prior single-process
+manual test found no reported multiplexing with five hardware events, but
+the actual multiworker configuration still requires a short local check.
+Custom profiling aborts if an event is unsupported/not counted or reports
+less than 99.5% running, preserving already completed campaign files.
+
+To inspect without running benchmarks:
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_advanced_perf.toml --check
+```
+
+Only after validating PMU permissions and the new profile on a short local
+test, the usual full-study command is:
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_advanced_perf.toml --run
+```
+
+The full plan has 7,200 invocations and 28,800 profiled measurements. Do
+**not** combine these new no-settle measurements with historical campaigns
+as though they were exchangeable repetitions. The benchmark remains on a
+single cached BLS dataset; cache profiling cannot directly establish
+cache-coherence traffic or identify which function caused an event.

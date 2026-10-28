@@ -17,7 +17,7 @@ use clap::Parser;
 
 use cli::{Cli, ProfileMode, SchedulerKind, ThreadanceWaitPolicy, WorkloadKind};
 use delivery::DeliverySchedule;
-use perf_control::DEEP_PASSES;
+use perf_control::{DEEP_PASSES, parse_custom_passes};
 use runner::{RepeatedRunOutput, run_repeated};
 use schedulers::{
     Scheduler, bevy::BevyScheduler, gate_ring::GateScheduler, gate_rtrb::RtrbGateScheduler,
@@ -202,20 +202,48 @@ where
     S: Scheduler,
     W: Workload,
 {
-    let output = run_repeated(cli.warmup, cli.runs, cli.profile, || {
-        scheduler.run(workload, delivery)
+    let custom_passes = cli.perf_passes_json.as_deref().map(|json| {
+        assert!(
+            matches!(cli.profile, ProfileMode::Deep),
+            "custom perf passes require --profile deep"
+        );
+        parse_custom_passes(json).expect("invalid custom perf passes")
     });
+    let output = run_repeated(
+        cli.warmup,
+        cli.runs,
+        cli.profile,
+        custom_passes.as_deref(),
+        cli.reverse_perf_passes,
+        || scheduler.run(workload, delivery),
+    );
 
     match cli.profile {
         ProfileMode::Deep => {
             let runs_per_pass = cli.runs.get();
 
-            for (pass_index, pass) in DEEP_PASSES.iter().enumerate() {
+            let pass_names: Vec<&str> = if let Some(custom) = &custom_passes {
+                let mut names = custom
+                    .iter()
+                    .map(|pass| pass.name.as_str())
+                    .collect::<Vec<_>>();
+                if cli.reverse_perf_passes {
+                    names.reverse();
+                }
+                names
+            } else {
+                let mut names = DEEP_PASSES.iter().map(|pass| pass.name).collect::<Vec<_>>();
+                if cli.reverse_perf_passes {
+                    names.reverse();
+                }
+                names
+            };
+            for (pass_index, pass_name) in pass_names.iter().enumerate() {
                 let start = pass_index * runs_per_pass;
 
                 let end = start + runs_per_pass;
 
-                println!("Deep pass: {}", pass.name,);
+                println!("Deep pass: {pass_name}");
 
                 let summary = RunSummary::from_results(&output.results[start..end]);
 

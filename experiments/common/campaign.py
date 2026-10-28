@@ -53,6 +53,26 @@ def read_definition(path: Path) -> dict:
             raise ValueError(f"Missing TOML section: {section}")
     if data["experiment"]["profile"] not in ("none", "standard", "deep"):
         raise ValueError("Unknown profiling mode")
+    passes = data.get("perf", {}).get("passes", [])
+    if passes:
+        if data["experiment"]["profile"] != "deep":
+            raise ValueError("Custom perf passes require profile=deep")
+        if not isinstance(passes, list) or len(passes) > 8:
+            raise ValueError("Invalid custom perf passes")
+        for entry in passes:
+            if not isinstance(entry, dict) or set(entry) != {"name", "events"}:
+                raise ValueError("Custom perf pass requires name and events")
+            if not isinstance(entry["name"], str) or not re.fullmatch(r"[A-Za-z0-9-]+", entry["name"]):
+                raise ValueError("Invalid perf pass name")
+            events = entry["events"]
+            if not isinstance(events, list) or not events or len(events) > 16 or any(
+                not isinstance(event, str) or
+                not re.fullmatch(r"[A-Za-z0-9_.:-]+", event)
+                for event in events
+            ):
+                raise ValueError("Invalid perf events")
+        if len({entry["name"] for entry in passes}) != len(passes):
+            raise ValueError("Duplicate perf pass names")
     if data["experiment"]["workload"] not in ("bls-aggregate-verify", "compute-heavy"):
         raise ValueError("Unknown workload")
     if data["delivery"]["mode"] not in DELIVERY_FLAGS:
@@ -211,6 +231,10 @@ def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
             "--profile", data["experiment"]["profile"],
             "--campaign-id", campaign,
             "--database", str(database.resolve())]
+    if data.get("perf", {}).get("passes"):
+        args += ["--perf-passes-json", json.dumps(data["perf"]["passes"], separators=(",", ":"))]
+        if int(row["block"]) % 2 == 0:
+            args.append("--reverse-perf-passes")
     if data["experiment"]["workload"] == "compute-heavy":
         args += ["--operations-per-work-unit", str(w["operations_per_work_unit"])]
     else:
@@ -331,7 +355,9 @@ def load_and_verify_progress(folder: Path, definition: Path, plan: list[dict],
         all_ids = {row[0] for row in recorded}
         if not ids.issubset(all_ids):
             raise ValueError("Manifest references absent campaign experiments")
-        expected_passes = 4 if profile == "deep" else 1
+        stored_definition = read_definition(definition)
+        expected_passes = (len(stored_definition.get("perf", {}).get("passes") or [])
+                           or (4 if profile == "deep" else 1))
         for eid, unit_count, stored_profile, _ in recorded:
             if eid not in ids:
                 continue
@@ -377,7 +403,8 @@ def verify_campaign_database(folder: Path, data: dict, expected_invocations: int
     if not database.is_file():
         raise RuntimeError(f"Campaign database missing: {database}")
     repeats = int(data["repetitions"]["measured_runs_per_block"])
-    passes = 4 if data["experiment"]["profile"] == "deep" else 1
+    passes = (len(data.get("perf", {}).get("passes") or [])
+              or (4 if data["experiment"]["profile"] == "deep" else 1))
     expected_runs = expected_invocations * repeats * passes
     with sqlite3.connect(database) as connection:
         errors = connection.execute("PRAGMA foreign_key_check").fetchall()

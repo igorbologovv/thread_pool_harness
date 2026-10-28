@@ -49,19 +49,25 @@ def csv_write(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def allowed_metrics(profile: str, perf_pass: str, delivery: str) -> tuple[str, ...]:
+def allowed_metrics(profile: str, perf_pass: str, delivery: str, pass_events=None) -> tuple[str, ...]:
     basic = ("elapsed_ms", "throughput")
     if delivery != "all-at-once":
         basic += ("drain_delay_ms",)
-    events = () if profile == "none" else PASS_EVENTS[perf_pass]
-    return basic + tuple(METRIC_COLUMNS[event] for event in events)
+    events = () if profile == "none" else (pass_events or PASS_EVENTS)[perf_pass]
+    return basic + tuple(event.replace("-", "_") + "_per_wu" for event in events)
 
 
 def analyze(folder: Path) -> None:
     definition = tomllib.loads((folder / "experiment.toml").read_text())
     profile = definition["experiment"]["profile"]
     delivery = definition["delivery"]["mode"]
-    expected_passes = DEEP_PASSES if profile == "deep" else (profile,)
+    custom = definition.get("perf", {}).get("passes", [])
+    pass_events = ({entry["name"]: tuple(event.split(":")[0] for event in entry["events"])
+                    for entry in custom} if custom else PASS_EVENTS)
+    expected_passes = (tuple(pass_events) if custom else
+                       DEEP_PASSES if profile == "deep" else (profile,))
+    events = tuple(dict.fromkeys(event for group in pass_events.values() for event in group))
+    metric_columns = {name: name.replace("-", "_") + "_per_wu" for name in events}
     with (folder / "manifest.csv").open(newline="") as handle:
         manifest = list(csv.DictReader(handle))
     with (folder / "plan.csv").open(newline="") as handle:
@@ -74,10 +80,10 @@ def analyze(folder: Path) -> None:
 
     counters = ",\n".join(
         "(SELECT p.counter_value FROM perf_metric p WHERE p.run_id=r.id "
-        f"AND p.event_name IN ('{event}', '{event}:u') "
+        f"AND p.event_name IN ('{event}', '{event}:u', '{event}:uk') "
         f"ORDER BY CASE WHEN p.event_name='{event}' THEN 0 ELSE 1 END "
         f"LIMIT 1) AS counter_{i}"
-        for i, event in enumerate(EVENTS)
+        for i, event in enumerate(events)
     )
     query = f"""
     SELECT e.id, e.work_units, r.id, r.run_index, r.perf_pass,
@@ -112,8 +118,8 @@ def analyze(folder: Path) -> None:
             if last_arrival is not None else None,
         )
         entry.update({
-            METRIC_COLUMNS[event]: float(value) / work_units if value is not None else None
-            for event, value in zip(EVENTS, perf)
+            metric_columns[event]: float(value) / work_units if value is not None else None
+            for event, value in zip(events, perf)
         })
         raw.append(entry)
         grouped[(entry["block"], entry["configuration"], entry["spin_us"],
@@ -131,7 +137,7 @@ def analyze(folder: Path) -> None:
         summary = dict(block=block, configuration=configuration, spin_us=spin_us,
                        arrival_rate=arrival_rate, rho=items[0]["rho"],
                        perf_pass=perf_pass, n_runs=len(items))
-        for metric in allowed_metrics(profile, perf_pass, delivery):
+        for metric in allowed_metrics(profile, perf_pass, delivery, pass_events):
             values = [item[metric] for item in items]
             summary[metric] = statistics.mean(values) if all(v is not None for v in values) else None
         summaries.append(summary)
@@ -155,7 +161,7 @@ def analyze(folder: Path) -> None:
     for config, spin, rate, pass_name in conditions:
         if config == reference:
             continue
-        for metric in allowed_metrics(profile, pass_name, delivery):
+        for metric in allowed_metrics(profile, pass_name, delivery, pass_events):
             differences, relative = [], []
             for block in range(1, blocks + 1):
                 lhs = by_key[(block, config, spin, rate, pass_name)][metric]
