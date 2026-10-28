@@ -83,6 +83,7 @@ def main():
     log=(OUT/'latex_pass_2.log').read_text()
     overfull=[x for x in log.splitlines() if 'Overfull' in x]
     check('LaTeX_no_overfull_boxes',not overfull,overfull[:12])
+    check('LaTeX_no_oversized_floats','Float too large' not in log)
     result={'checks':checks,'passed':all(c['passed'] for c in checks),'pdf_pages':len(pdf),'original_files_verified':len(inv),
         'independent_maximum_absolute_errors':maximum_errors,'visual_review':'See visual_validation.md for manually inspected pages and figures.'}
     (OUT/'validation.json').write_text(json.dumps(result,indent=2)+'\n')

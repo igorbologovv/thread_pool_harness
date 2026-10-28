@@ -48,7 +48,7 @@ class Document:
     def figure(self,name,interpretation='',landscape=True):
         f=self.catalog[name];self.used.add(name)
         self.tex.append('\\clearpage\n'+('\\begin{landscape}\n' if landscape else '')+'\\begin{figure}[p]\n\\centering\n')
-        self.tex.append('\\includegraphics[width='+('245mm' if landscape else '164mm')+',height='+('139mm' if landscape else '195mm')+',keepaspectratio]{figures/'+name+'.pdf}\n')
+        self.tex.append('\\includegraphics[width='+('245mm' if landscape else '164mm')+',height='+('134mm' if landscape else '195mm')+',keepaspectratio]{figures/'+name+'.pdf}\n')
         self.tex.append('\\caption{'+esc(f['caption']+' '+interpretation)+'}\\label{fig:'+name+'}\n\\end{figure}\n'+('\\end{landscape}\n' if landscape else '')+'\\clearpage\n')
         self.md.append(f'![{f["caption"]} {interpretation}](figures/{name}.svg)\n')
 

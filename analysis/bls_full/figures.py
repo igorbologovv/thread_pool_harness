@@ -11,7 +11,7 @@ from sklearn.mixture import GaussianMixture
 from common import *
 
 plt.rcParams.update({'font.family':'DejaVu Sans','font.size':9,'axes.titlesize':10,'axes.labelsize':9,
-    'xtick.labelsize':8,'ytick.labelsize':8,'legend.fontsize':8,'pdf.fonttype':42,'svg.fonttype':'none',
+    'xtick.labelsize':9,'ytick.labelsize':9,'legend.fontsize':8,'pdf.fonttype':42,'svg.fonttype':'none',
     'axes.spines.top':False,'axes.spines.right':False,'axes.grid':True,'grid.alpha':.17,'savefig.bbox':'tight'})
 COLORS={'MPMC':'#0072B2','RTRB':'#D55E00','rayon':'#333333','bevy':'#009E73'}
 CATALOG=[]
@@ -55,7 +55,19 @@ def main():
         z=fa[fa.factor==factor]
         if topology:z=z[z.configuration.map(lambda x:cfg.loc[x,'topology'])==topology]
         pairs=list(dict.fromkeys(zip(z.configuration,z.reference)))
-        fig,axs=plt.subplots(1,2,figsize=(11,max(4.5,.31*len(pairs)+1.8)),layout='constrained')
+        fig,axs=plt.subplots(1,2,figsize=(11,max(4.3,.25*len(pairs)+1.4)),layout='constrained')
+        def contrast_label(a,r):
+            x,y=cfg.loc[a],cfg.loc[r]
+            top='M' if x.topology=='MPMC' else 'R'
+            policy={'crossbeam-wait':'CW','agave-backoff':'AB','spin-then-park':'SP'}[x.policy]
+            polref={'crossbeam-wait':'CW','agave-backoff':'AB','spin-then-park':'SP'}[y.policy]
+            sp=f' s{x.spin}' if x.policy=='spin-then-park' else ''
+            back=f' b{x.backlog}' if x.topology=='RTRB' else ''
+            if factor=='spin':return f'{top} q{x.capacity}{back}: {x.spin} − {y.spin} µs'
+            if factor=='wait':return f'{top} q{x.capacity}{back}: {policy}{sp} − {polref}'
+            if factor=='topology':return f'{policy}{sp} q{x.capacity}: R b{x.backlog} − M'
+            if factor=='capacity':return f'{top} {policy}{sp}{back}: q64 − q8'
+            return f'{policy}{sp} q{x.capacity}: b2 − b1'
         for ax,m in zip(axs,['elapsed_ms','task_clock_ms']):
             zz=z[z.metric==m];v=np.array([[zz[(zz.scenario==s)&(zz.configuration==a)&(zz.reference==r)].relative_pct.iloc[0] for s in SCENARIOS] for a,r in pairs])
             lim=max(np.quantile(abs(v),.95),.1);norm=TwoSlopeNorm(vmin=-lim,vcenter=0,vmax=lim)
@@ -64,9 +76,9 @@ def main():
                 for j,s in enumerate(SCENARIOS):
                     row=zz[(zz.scenario==s)&(zz.configuration==a)&(zz.reference==r)].iloc[0]
                     mark='*' if row.sim_ci_low>0 or row.sim_ci_high<0 else ''
-                    ax.text(j,i,f'{v[i,j]:.1f}{mark}',ha='center',va='center',fontsize=8.2,color='white' if abs(v[i,j])>.65*lim else '#222')
+                    ax.text(j,i,f'{v[i,j]:.1f}{mark}',ha='center',va='center',fontsize=9,color='white' if abs(v[i,j])>.65*lim else '#222')
             ax.set_xticks(range(10),[s.replace('w','').replace('_','\n') for s in SCENARIOS],fontsize=8.2)
-            ax.set_yticks(range(len(pairs)),[short(a)+' − '+short(r) for a,r in pairs] if ax==axs[0] else [])
+            ax.set_yticks(range(len(pairs)),[contrast_label(a,r) for a,r in pairs] if ax==axs[0] else [],fontsize=9)
             ax.set_title('Elapsed time (%)' if m=='elapsed_ms' else 'CPU task-clock (%)');ax.grid(False)
             fig.colorbar(im,ax=ax,shrink=.6,label='Mean paired change (%)',extend='both')
         tag=factor+('_'+topology.lower() if topology else '')
