@@ -154,7 +154,7 @@ def config_from_experiment(path: Path) -> tuple[Path, DatasetConfig]:
         validators=int(workload["validators"]),
         signers_per_certificate=int(workload["signers_per_certificate"]),
         certificates_per_work_unit=int(workload["certificates_per_work_unit"]),
-        work_units=int(workload["work_units"]),
+        work_units=int(workload.get("dataset_work_units", workload["work_units"])),
         workload_seed=int(workload["workload_seed"]),
     )
     return Path(artifacts["dataset_cache_dir"]), config
