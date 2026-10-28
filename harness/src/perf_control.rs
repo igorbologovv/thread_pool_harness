@@ -72,6 +72,66 @@ pub const DEEP_PASSES: &[PerfPass] = &[
     },
 ];
 
+#[derive(Debug, Clone)]
+pub struct CustomPerfPass {
+    pub name: String,
+    pub events: Vec<String>,
+}
+
+pub fn parse_custom_passes(value: &str) -> PerfResult<Vec<CustomPerfPass>> {
+    let values: Vec<Value> = serde_json::from_str(value)?;
+    if values.is_empty() || values.len() > 8 {
+        return Err("custom perf requires 1 to 8 passes".into());
+    }
+    let mut passes = Vec::with_capacity(values.len());
+    let mut names = std::collections::HashSet::new();
+    for value in values {
+        let object = value.as_object().ok_or("perf pass must be an object")?;
+        if object.len() != 2 {
+            return Err("perf pass must contain only name and events".into());
+        }
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("perf pass needs a string name")?;
+        let raw_events = object
+            .get("events")
+            .and_then(Value::as_array)
+            .ok_or("perf pass needs an events array")?;
+        let events: Vec<String> = raw_events
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("perf event must be a string")
+            })
+            .collect::<Result<_, _>>()?;
+        if name.is_empty()
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !names.insert(name.to_owned())
+        {
+            return Err(format!("invalid or duplicate perf pass name: {name}").into());
+        }
+        if events.is_empty()
+            || events.len() > 16
+            || events.iter().any(|event| {
+                event.is_empty()
+                    || !event
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+            })
+        {
+            return Err(format!("invalid events in perf pass: {name}").into());
+        }
+        passes.push(CustomPerfPass {
+            name: name.to_owned(),
+            events,
+        });
+    }
+    Ok(passes)
+}
+
 #[derive(Debug)]
 pub struct PerfMetric {
     pub event_name: String,
@@ -97,7 +157,26 @@ pub fn measure_run<F>(pass: PerfPass, run_once: F) -> PerfResult<(RunResult, Per
 where
     F: FnOnce() -> RunResult,
 {
-    let mut perf = PerfSession::start(pass.events)?;
+    measure_run_events(
+        pass.name,
+        &pass
+            .events
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>(),
+        run_once,
+    )
+}
+
+pub fn measure_run_events<F>(
+    pass_name: &str,
+    events: &[String],
+    run_once: F,
+) -> PerfResult<(RunResult, PerfCapture)>
+where
+    F: FnOnce() -> RunResult,
+{
+    let mut perf = PerfSession::start(&events.join(","))?;
 
     perf.send_command("enable")?;
 
@@ -106,7 +185,7 @@ where
     perf.send_command("disable")?;
 
     let mut capture = perf.finish()?;
-    capture.pass_name = pass.name.to_owned();
+    capture.pass_name = pass_name.to_owned();
 
     Ok((result, capture))
 }
@@ -123,7 +202,7 @@ struct PerfSession {
 }
 
 impl PerfSession {
-    fn start(events: &[&str]) -> PerfResult<Self> {
+    fn start(events: &str) -> PerfResult<Self> {
         let sequence = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         let temp_dir =
@@ -149,7 +228,6 @@ impl PerfSession {
             .custom_flags(libc::O_NONBLOCK)
             .open(&ack_path)?;
 
-        let events = events.join(",");
         let pid = std::process::id().to_string();
 
         let control_spec = format!("fifo:{},{}", control_path.display(), ack_path.display(),);
@@ -159,7 +237,7 @@ impl PerfSession {
             "-j".to_owned(),
             "--no-big-num".to_owned(),
             "-e".to_owned(),
-            events,
+            events.to_owned(),
             "-p".to_owned(),
             pid,
             "-D".to_owned(),
@@ -267,12 +345,12 @@ impl PerfSession {
     fn finish(mut self) -> PerfResult<PerfCapture> {
         let mut child = self.child.take().expect("perf child must exist");
 
-        let status = match child.try_wait()? {
-            Some(status) => status,
+        let (status, interrupted_by_us) = match child.try_wait()? {
+            Some(status) => (status, false),
 
             None => {
                 send_signal(&child, libc::SIGINT)?;
-                child.wait()?
+                (child.wait()?, true)
             }
         };
 
@@ -282,13 +360,23 @@ impl PerfSession {
             pipe.read_to_string(&mut stderr)?;
         }
 
-        let perf_exit_code = status
+        let exit_code = status
             .code()
             .unwrap_or_else(|| status.signal().map(|signal| 128 + signal).unwrap_or(-1));
 
         let raw_output = fs::read_to_string(&self.output_path).unwrap_or_default();
 
         let (raw_json, metrics) = parse_perf_output(&raw_output, &stderr)?;
+
+        // The harness sends SIGINT to make perf stat flush its final counters.
+        // Some perf versions exit with 130 (128 + SIGINT) on this normal path.
+        // Accept it only when we sent the signal and perf emitted counters;
+        // genuine errors remain visible to the caller.
+        let perf_exit_code = if interrupted_by_us && exit_code == 130 && !metrics.is_empty() {
+            0
+        } else {
+            exit_code
+        };
 
         let _ = fs::remove_dir_all(&self.temp_dir);
 

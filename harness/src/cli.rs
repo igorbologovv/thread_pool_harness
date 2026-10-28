@@ -142,6 +142,14 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "none")]
     pub profile: ProfileMode,
 
+    /// JSON array of named perf passes; requires --profile deep.
+    #[arg(long, requires = "profile")]
+    pub perf_passes_json: Option<String>,
+
+    /// Rotate custom pass order to balance time/order effects across blocks.
+    #[arg(long, default_value_t = false)]
+    pub reverse_perf_passes: bool,
+
     /// Identifier grouping separate harness invocations into one
     /// benchmark campaign or sweep.
     #[arg(long)]

@@ -93,14 +93,19 @@ impl BenchmarkDb {
         perf_captures: &[Option<PerfCapture>],
     ) -> StorageResult<StoredBenchmark> {
         let expected_results = match cli.profile {
-            ProfileMode::Deep => {
-                cli.runs
-                    .get()
-                    .checked_mul(DEEP_PASSES.len())
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "deep run count overflow")
-                    })?
-            }
+            ProfileMode::Deep => cli
+                .runs
+                .get()
+                .checked_mul(if let Some(json) = &cli.perf_passes_json {
+                    crate::perf_control::parse_custom_passes(json)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                        .len()
+                } else {
+                    DEEP_PASSES.len()
+                })
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "deep run count overflow")
+                })?,
 
             ProfileMode::None | ProfileMode::Standard => cli.runs.get(),
         };

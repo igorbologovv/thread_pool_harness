@@ -1,0 +1,58 @@
+# Second-round BLS study: balanced perf stat measurements with no inter-condition sleep.
+# Two different PMU groups per configuration, 2 measured runs per group per block.
+# Group sizes were manually checked on Ryzen 7 5700X with nmi_watchdog=1.
+# This is a new acquisition protocol; do not pool with previous BLS campaigns.
+
+[study]
+name = "bls-advanced-perf"
+template = "experiments/queue_topology/experiment.toml"
+output_dir = "experiments/generated/bls-advanced-perf"
+output_root = "results/studies/bls-advanced-perf/campaigns"
+max_invocations = 10000
+
+[axes]
+workers = [2, 4, 8, 16]
+schedulers = ["rayon", "bevy", "threadance", "threadance-hot-first-rtrb"]
+wait_policies = ["crossbeam-wait", "agave-backoff", "spin-then-park"]
+spin_durations_us = [0, 20, 40, 80]
+queue_capacities = [64]
+hot_first_backlogs = [1, 2]
+delivery_modes = ["all-at-once", "fixed-arrivals", "bursty-arrivals"]
+
+[overrides]
+profile = "deep"
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 0.0
+
+# Hardware events use both user and kernel mode (:uk).
+# Software events below are collected in both passes without additional
+# programmable hardware PMU slots. The passes are deliberately separate.
+[[perf.passes]]
+name = "cpu-cache"
+events = [
+    "cycles:uk",
+    "instructions:uk",
+    "cache-references:uk",
+    "cache-misses:uk",
+    "L1-dcache-load-misses:uk",
+    "task-clock",
+    "context-switches",
+    "cpu-migrations",
+    "page-faults",
+]
+
+[[perf.passes]]
+name = "l1-branches"
+events = [
+    "cycles:uk",
+    "L1-dcache-loads:uk",
+    "L1-dcache-load-misses:uk",
+    "branches:uk",
+    "branch-misses:uk",
+    "task-clock",
+    "context-switches",
+    "cpu-migrations",
+    "page-faults",
+]

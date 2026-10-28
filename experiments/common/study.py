@@ -25,7 +25,7 @@ AXES = {
 }
 OVERRIDES = {
     "blocks", "warmup_runs_per_block", "measured_runs_per_block",
-    "settle_seconds",
+    "settle_seconds", "profile",
 }
 NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -76,11 +76,19 @@ def read_study(path: Path) -> dict:
                 raise ValueError("Unknown delivery mode")
         elif any(type(v) is not int or v < 1 for v in values):
             raise ValueError(f"axes.{key} needs positive integers")
+    perf_passes = spec.get("perf", {}).get("passes", [])
+    if perf_passes:
+        from experiments.common.campaign import read_definition
+        if not isinstance(perf_passes, list) or not all(isinstance(p, dict) for p in perf_passes):
+            raise ValueError("perf.passes must be an array of tables")
     overrides = spec.get("overrides", {})
     if set(overrides) - OVERRIDES:
         raise ValueError(f"Unknown overrides: {set(overrides) - OVERRIDES}")
     for key, value in overrides.items():
-        if key == "settle_seconds":
+        if key == "profile":
+            if value not in ("none", "standard", "deep"):
+                raise ValueError("Unknown profile override")
+        elif key == "settle_seconds":
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError("Invalid settle_seconds")
         elif type(value) is not int or value < (0 if key == "warmup_runs_per_block" else 1):
@@ -185,9 +193,12 @@ def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], 
         elif not (concrete["delivery"].get("rho") or concrete["delivery"].get("arrival_rates")):
             raise ValueError("Scheduled modes require rho or arrival_rates in the template")
         for key, value in spec.get("overrides", {}).items():
-            section = "execution" if key == "settle_seconds" else "repetitions"
+            section = ("execution" if key == "settle_seconds"
+                       else "experiment" if key == "profile" else "repetitions")
             concrete.setdefault(section, {})[key] = value
 
+        if spec.get("perf", {}).get("passes"):
+            concrete["perf"] = copy.deepcopy(spec["perf"])
         concrete["configurations"], rejected = expand_configurations(base, axes, workers)
         skipped.extend(rejected)
         key = f"w{workers}-n{work_units}-g{granularity}-{mode}"
@@ -198,7 +209,8 @@ def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], 
         )
         service_us = 100.0 if concrete["delivery"].get("rho") else None
         plan = make_plan(concrete, service_us)
-        passes = 4 if concrete["experiment"]["profile"] == "deep" else 1
+        passes = (len(concrete.get("perf", {}).get("passes") or [])
+                  or (4 if concrete["experiment"]["profile"] == "deep" else 1))
         invocations = len(plan)
         repeats = concrete["repetitions"]
         stats = dict(
@@ -206,7 +218,8 @@ def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], 
             conditions=invocations // repeats["blocks"],
             invocations=invocations,
             measured_runs=invocations * repeats["measured_runs_per_block"] * passes,
-            warmup_runs=invocations * repeats.get("warmup_runs_per_block", 0) * passes,
+            warmup_runs=(invocations * repeats.get("warmup_runs_per_block", 0)
+                         * (1 if concrete.get("perf", {}).get("passes") else passes)),
             settle_floor_seconds=invocations * concrete.get("execution", {}).get("settle_seconds", 3),
         )
         campaigns.append((stats["file"], concrete, stats))
@@ -232,6 +245,8 @@ def toml_literal(value: object) -> str:
         return repr(value)
     if isinstance(value, list):
         return "[" + ", ".join(toml_literal(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{key} = {toml_literal(item)}" for key, item in value.items()) + " }"
     raise ValueError(f"Cannot serialize TOML value: {value!r}")
 
 
