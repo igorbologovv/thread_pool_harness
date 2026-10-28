@@ -53,8 +53,10 @@ impl BlsAggregateVerifyWorkload {
     /// Execute only the first count work units of a larger cached dataset.
     /// Each selected certificate is verified once per run, without wrapping.
     pub fn select_work_units(&mut self, count: usize) {
-        assert!(count > 0 && count <= self.work_units.len(),
-            "requested work units exceed cached BLS dataset");
+        assert!(
+            count > 0 && count <= self.work_units.len(),
+            "requested work units exceed cached BLS dataset"
+        );
         self.work_units.truncate(count);
     }
 
@@ -505,22 +507,34 @@ mod tests {
 
     #[test]
     fn cached_dataset_can_run_a_prefix_without_repeating_certificates() {
-        let common = CommonWorkloadConfig { work_units: 8, seed: 12 };
+        let common = CommonWorkloadConfig {
+            work_units: 8,
+            seed: 12,
+        };
         let config = BlsAggregateVerifyConfig {
-            validators: 8, signers_per_certificate: 6, certificates_per_work_unit: 1,
+            validators: 8,
+            signers_per_certificate: 6,
+            certificates_per_work_unit: 1,
         };
         let mut workload = BlsAggregateVerifyWorkload::generate(&common, &config);
         workload.select_work_units(3);
         assert_eq!(workload.work_units(), &[0..1, 1..2, 2..3]);
-        for unit in workload.work_units() { workload.execute(unit); }
+        for unit in workload.work_units() {
+            workload.execute(unit);
+        }
     }
 
     #[test]
     #[should_panic(expected = "requested work units exceed cached BLS dataset")]
     fn cannot_select_more_work_units_than_cached() {
-        let common = CommonWorkloadConfig { work_units: 2, seed: 12 };
+        let common = CommonWorkloadConfig {
+            work_units: 2,
+            seed: 12,
+        };
         let config = BlsAggregateVerifyConfig {
-            validators: 8, signers_per_certificate: 6, certificates_per_work_unit: 1,
+            validators: 8,
+            signers_per_certificate: 6,
+            certificates_per_work_unit: 1,
         };
         let mut workload = BlsAggregateVerifyWorkload::generate(&common, &config);
         workload.select_work_units(3);
