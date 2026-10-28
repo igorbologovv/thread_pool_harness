@@ -667,3 +667,92 @@ The next methodological step is to use the calibrated \(S\) to select initial
 arrival-rate points, then introduce explicit Threadance wait/wake policies and
 thread-pool-level counters so that performance differences can be related to
 worker idle, block, sleep, and wake behavior.
+
+## 2026-10-28: Normalized offered-load study and reusable BLS dataset
+
+### Motivation and research decision
+
+The next experimental goal is to make the choice of Threadance configuration
+depend on offered load, rather than producing only a ranking at two arbitrary
+arrival rates. A comparison at a single absolute arrival rate also gives very
+different relative loads to pools with 2, 4, 8, and 16 workers.
+
+For this study, define the *reference-relative offered load* as
+
+```text
+load_fraction = scheduled_arrival_rate / saturated_reference_throughput(workers)
+scheduled_arrival_rate = load_fraction * saturated_reference_throughput(workers)
+```
+
+The reference is the same measured Rayon all-at-once throughput for every
+scheduler with a given worker count. This controls the arrival-rate treatment
+*within* a worker count; it does not assert equal actual CPU utilization or
+equal physical-core occupancy across configurations. This parameter is also
+distinct from the earlier nominal `rho = lambda * S / workers`, which assumes
+idealized worker capacity.
+
+The preliminary reference rates in WU/s are 1294 (2 workers), 2583 (4),
+4792 (8), and 5224 (16), taken from the archived BLS report. Before
+confirmatory runs, validate or replace them with version-matched, documented
+reference measurements; keep the chosen reference vector with the campaign.
+
+### Compact queueing-motivated design
+
+Six load levels were selected: 0.25, 0.50, 0.75, 0.9375, 1.10, and 2.00.
+The subcritical values cover light, moderate, high, and near-saturation
+conditions, where queueing-delay sensitivity rises sharply as utilization
+approaches the service-capacity boundary. The two supercritical levels are
+finite-window overload stress tests, **not** steady-state operating points.
+Separate 0.875, 1.0, and 1.05 levels were omitted to limit campaign cost.
+
+The primary matrix varies 2/4/8/16 workers, fixed/bursty arrivals, and
+five scheduler anchors: Rayon; shared-MPMC SpinThenPark(0) and AgaveBackoff;
+RTRB SpinThenPark(0) with backlog 1 or 2. Queue-capacity label q64 is fixed.
+Twenty randomized blocks contain one warm-up and two measured runs per
+configuration; profiling uses standard perf. This yields 48 campaigns, 4800
+invocations, 9600 measured physical runs and 4800 warm-ups. The matrix is
+intentionally not a full policy/spin/backlog factorial.
+
+### Dataset and window handling
+
+The BLS workload now permits a fixed dataset of 2500 distinct work units
+and a separate per-run `work_units` count. The cached dataset is loaded once
+per invocation, then only its first `work_units` are submitted: no within-run
+wrapping or repeated verification of the same certificate. Each scheduled
+test uses:
+
+```text
+N = ceil(scheduled_arrival_rate * 0.200 seconds) + 1
+scheduled_arrival_window = (N - 1) / scheduled_arrival_rate >= 200 ms
+```
+
+The same N and arrivals are used for every scheduler configuration in a
+worker/load/arrival-mode campaign. For the highest preliminary point (16
+workers, 200%), N = 2091, within the 2500-certificate dataset capacity.
+The 200 ms minimum concerns the **scheduled submission window**, not a promise
+of 200 ms actual producer progress under backpressure. Elapsed time also
+includes draining all submitted tasks. Inspect observed arrival lateness
+especially at overload points; task-level latency remains unmeasured.
+
+The Rust CLI accepts optional `--dataset-work-units`; omitting it preserves
+the previous cache-size behavior. The existing dataset-identity helper and
+campaign invocation path were adjusted to fingerprint the fixed full input
+dataset rather than each variable-length run. Existing historical campaigns
+are unaffected.
+
+### Reproducibility and remaining validation
+
+The experiment generator is
+`experiments/studies/bls_normalized_load.py` and its separate explanation
+is `experiments/studies/BLs_NORMALIZED_LOAD.md`. `--check` previews the
+plan and `--write` creates campaign TOMLs plus a JSON manifest. It does
+not run measurements. Planned test cases cover the load grid, minimum
+window, dataset bounds, matched arrival modes, and the 16-worker 200% case.
+
+These changes were committed on
+`experiment/normalized-bls-load`. No Rust compilation, perf execution,
+or host-level benchmark validation has yet been completed. Before collecting
+the full study, run formatting, tests, clippy, a small end-to-end pilot, and
+check the arrival-lateness and distribution diagnostics. New runs must be
+analyzed as their own acquisition series; historical 1000-work-unit results
+are not interchangeable repeated measurements.
