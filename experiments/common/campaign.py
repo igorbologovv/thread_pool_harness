@@ -97,6 +97,8 @@ def read_definition(path: Path) -> dict:
         for key in ("validators", "signers_per_certificate", "certificates_per_work_unit"):
             if int(w[key]) < 1:
                 raise ValueError(f"{key} must be positive")
+        if int(w.get("dataset_work_units", w["work_units"])) < int(w["work_units"]):
+            raise ValueError("dataset_work_units must be >= work_units")
     d = data["delivery"]
     if d["mode"] != "all-at-once" and not (d.get("arrival_rates") or d.get("rho")):
         raise ValueError("Scheduled delivery requires arrival_rates or rho")
@@ -242,6 +244,8 @@ def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
             args += ["--" + key.replace("_", "-"), str(w[key])]
         args += ["--dataset-cache-dir",
                  str((ROOT / data["artifacts"].get("dataset_cache_dir", "results/datasets")).resolve())]
+        if "dataset_work_units" in w:
+            args += ["--dataset-work-units", str(w["dataset_work_units"])]
     args += ["--" + d["mode"]]
     if d["mode"] != "all-at-once":
         args += ["--arrival-rate", str(row["arrival_rate"]), "--arrival-seed", str(row["arrival_seed"])]
