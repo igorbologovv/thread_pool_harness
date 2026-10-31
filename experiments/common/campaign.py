@@ -109,6 +109,9 @@ def read_definition(path: Path) -> dict:
     if any(not 0 < float(v) < 1 for v in d.get("rho", [])):
         raise ValueError("Target rho must be between 0 and 1")
     for config in data["configurations"]:
+        if "warmup_runs" in config and (type(config["warmup_runs"]) is not int
+                                        or config["warmup_runs"] < 0):
+            raise ValueError(f"Invalid per-configuration warmup_runs in {config['id']}")
         if config["scheduler"] not in (
             "threadance", "threadance-hot-first", "threadance-hot-first-rtrb", "rayon", "bevy"
         ):
@@ -201,7 +204,9 @@ def make_plan(data: dict, service_us: float | None) -> list[dict]:
                              queue_capacity=int(config.get("queue_capacity", w.get("queue_capacity", 1024))),
                              hot_first_backlog=int(config.get("hot_first_backlog", 1)),
                              rho=rho if rho is not None else "",
-                             arrival_rate=rate if rate is not None else ""))
+                             arrival_rate=rate if rate is not None else "",
+                             **({"warmup_runs": config["warmup_runs"]}
+                                if "warmup_runs" in config else {})))
     if not base:
         raise ValueError("Empty condition grid")
     records = []
@@ -228,7 +233,7 @@ def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
             "--threadance-wait-policy", row["wait_policy"],
             "--threadance-spin-us", str(row["spin_us"]),
             "--seed", str(w.get("workload_seed", 1)),
-            "--warmup", str(r.get("warmup_runs_per_block", 0)),
+            "--warmup", str(row.get("warmup_runs", r.get("warmup_runs_per_block", 0))),
             "--runs", str(r["measured_runs_per_block"]),
             "--profile", data["experiment"]["profile"],
             "--campaign-id", campaign,
