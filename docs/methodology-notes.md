@@ -905,3 +905,43 @@ The longer-term thesis goal remains a configuration-selection rule
 for Threadance: identify when a wait/wake or queue policy reduces CPU
 resource use without unacceptable latency or throughput loss, and
 support that rule with statistically defensible measurements.
+
+## 2026-10-31: Observations from the saturated-throughput campaign
+
+The four all-at-once BLS throughput campaigns completed on the benchmark
+host: 2, 4, 8 and 16 workers, six scheduler configurations and 30 randomized
+blocks per worker count. They produced 1440 measured runs (60 per
+worker/scheduler condition). The archived environment metadata identifies
+harness commit `0a295ac741d1a410eec3976bbff22fcdd7bb5bba` and
+Threadance commit `7435d61195d7a0144cc3aa3d6bbe77ff179b929d`.
+
+The raw runs contain two measured repetitions after one warm-up in each
+invocation. With 8 workers, Rayon averaged 4728.7 WU/s in the first measured
+repetition and 4897.8 WU/s in the second (+3.58%). With 16 workers,
+the corresponding means were 5095.8 and 5276.5 WU/s (+3.57%).
+For Rayon at 8 workers, the second measured repetition was faster in
+all 30 blocks. The order-related difference was also visible in
+other schedulers; its cause has not been established.
+
+Hartigan's dip test was applied to the 24 pooled throughput samples
+(4 worker counts × 6 configurations, 60 measurements each).
+Nine of the 24 tests rejected unimodality at adjusted p < 0.05 using
+Holm's multiple-testing correction. These rejections occurred among
+the 8- and 16-worker conditions; none occurred at 2 or 4 workers
+after that correction. Separate dip tests on first and second measured
+repetitions (48 samples of n=30) produced no Holm-adjusted
+rejections at 0.05.
+
+For pooled Rayon throughput, the observed dip statistics were
+D=0.10447 at 8 workers and D=0.13691 at 16 workers.
+The corresponding Holm-adjusted Monte Carlo p-values were 0.00048
+for both. The dip test indicates departures from unimodality in those
+pooled samples; it does not establish exactly two modes. Failure to
+reject unimodality in the smaller separated samples does not establish
+that those distributions are unimodal. The dip-test calibration also
+assumes independent identically distributed samples; the observed
+within-invocation run-order effect needs to be considered when
+interpreting these p-values.
+
+No causal explanation for the run-order effect or for the pooled
+distribution shapes has been established.
