@@ -1,0 +1,15 @@
+[study]
+name = "bls-warmup-sweep"
+template = "experiments/studies/bls_warmup_sweep_template.toml"
+output_dir = "experiments/generated/bls-warmup-sweep"
+output_root = "results/studies/bls-warmup-sweep/campaigns"
+max_invocations = 300
+
+[axes]
+workers = [4, 8, 16]
+
+[overrides]
+blocks = 20
+measured_runs_per_block = 8
+settle_seconds = 0.0
+profile = "standard"

@@ -88,9 +88,11 @@ def generate(root: Path) -> dict:
         analyze(folder)  # enforces complete runs and paired block alignment
         definition = tomllib.loads((folder / "experiment.toml").read_text())
         raw = rows(folder / "analysis_raw_runs.csv")
-        effects = rows(folder / "paired_effects.csv")
+        effects_file = folder / "paired_effects.csv"
+        effects = rows(effects_file) if effects_file.is_file() else []
         blocks = int(definition["repetitions"]["blocks"])
-        if not raw or not effects or any(
+        configs = {row["configuration"] for row in raw}
+        if not raw or (len(configs) > 1 and not effects) or any(
             int(row["n_blocks"]) != blocks for row in effects
         ):
             raise ValueError(f"Invalid effects in campaign {folder}")

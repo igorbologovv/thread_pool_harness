@@ -218,7 +218,8 @@ def expand_study(spec: dict, base: dict) -> tuple[list[tuple[str, dict, dict]], 
             conditions=invocations // repeats["blocks"],
             invocations=invocations,
             measured_runs=invocations * repeats["measured_runs_per_block"] * passes,
-            warmup_runs=(invocations * repeats.get("warmup_runs_per_block", 0)
+            warmup_runs=(sum(row.get("warmup_runs", repeats.get("warmup_runs_per_block", 0))
+                             for row in plan)
                          * (1 if concrete.get("perf", {}).get("passes") else passes)),
             settle_floor_seconds=invocations * concrete.get("execution", {}).get("settle_seconds", 3),
         )

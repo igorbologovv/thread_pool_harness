@@ -84,11 +84,23 @@ fn main() {
                 certificates_per_work_unit: cli.certificates_per_work_unit.get(),
             };
 
-            let workload = Arc::new(BlsAggregateVerifyWorkload::load_or_generate_cached(
-                &common_config,
+            let dataset_config = CommonWorkloadConfig {
+                work_units: cli
+                    .dataset_work_units
+                    .map_or(common_config.work_units, |n| n.get()),
+                seed: common_config.seed,
+            };
+            assert!(
+                dataset_config.work_units >= common_config.work_units,
+                "--dataset-work-units must be >= --work-units"
+            );
+            let mut dataset = BlsAggregateVerifyWorkload::load_or_generate_cached(
+                &dataset_config,
                 &workload_config,
                 &cli.dataset_cache_dir,
-            ));
+            );
+            dataset.select_work_units(common_config.work_units);
+            let workload = Arc::new(dataset);
 
             run_selected_scheduler(&cli, &workload, &delivery)
         }

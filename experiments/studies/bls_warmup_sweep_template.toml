@@ -1,0 +1,58 @@
+[experiment]
+name = "bls-warmup-sweep-template"
+workload = "bls-aggregate-verify"
+profile = "standard"
+
+[workload]
+workers = 8
+work_units = 2500
+dataset_work_units = 2500
+validators = 2000
+signers_per_certificate = 1600
+certificates_per_work_unit = 1
+workload_seed = 1
+queue_capacity = 64
+
+[delivery]
+mode = "all-at-once"
+arrival_seed_base = 42
+
+[repetitions]
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 8
+
+[randomization]
+seed = 20261101
+
+[execution]
+settle_seconds = 0.0
+
+[analysis]
+reference_configuration = "rayon-w1"
+bootstrap_replicates = 10000
+bootstrap_seed = 20261101
+
+[artifacts]
+dataset_cache_dir = "results/datasets"
+output_root = "results/studies/bls-warmup-sweep/campaigns"
+
+[[configurations]]
+id = "rayon-w1"
+scheduler = "rayon"
+warmup_runs = 1
+
+[[configurations]]
+id = "rayon-w2"
+scheduler = "rayon"
+warmup_runs = 2
+
+[[configurations]]
+id = "rayon-w4"
+scheduler = "rayon"
+warmup_runs = 4
+
+[[configurations]]
+id = "rayon-w8"
+scheduler = "rayon"
+warmup_runs = 8

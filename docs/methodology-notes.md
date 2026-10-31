@@ -667,3 +667,501 @@ The next methodological step is to use the calibrated \(S\) to select initial
 arrival-rate points, then introduce explicit Threadance wait/wake policies and
 thread-pool-level counters so that performance differences can be related to
 worker idle, block, sleep, and wake behavior.
+
+## 2026-10-28: Normalized offered-load study and reusable BLS dataset
+
+### Motivation and research decision
+
+The next experimental goal is to make the choice of Threadance configuration
+depend on offered load, rather than producing only a ranking at two arbitrary
+arrival rates. A comparison at a single absolute arrival rate also gives very
+different relative loads to pools with 2, 4, 8, and 16 workers.
+
+For this study, define the *reference-relative offered load* as
+
+```text
+load_fraction = scheduled_arrival_rate / saturated_reference_throughput(workers)
+scheduled_arrival_rate = load_fraction * saturated_reference_throughput(workers)
+```
+
+The reference is the same measured Rayon all-at-once throughput for every
+scheduler with a given worker count. This controls the arrival-rate treatment
+*within* a worker count; it does not assert equal actual CPU utilization or
+equal physical-core occupancy across configurations. This parameter is also
+distinct from the earlier nominal `rho = lambda * S / workers`, which assumes
+idealized worker capacity.
+
+The preliminary reference rates in WU/s are 1294 (2 workers), 2583 (4),
+4792 (8), and 5224 (16), taken from the archived BLS report. Before
+confirmatory runs, validate or replace them with version-matched, documented
+reference measurements; keep the chosen reference vector with the campaign.
+
+### Compact queueing-motivated design
+
+Six load levels were selected: 0.25, 0.50, 0.75, 0.9375, 1.10, and 2.00.
+The subcritical values cover light, moderate, high, and near-saturation
+conditions, where queueing-delay sensitivity rises sharply as utilization
+approaches the service-capacity boundary. The two supercritical levels are
+finite-window overload stress tests, **not** steady-state operating points.
+Separate 0.875, 1.0, and 1.05 levels were omitted to limit campaign cost.
+
+The primary matrix varies 2/4/8/16 workers, fixed/bursty arrivals, and
+five scheduler anchors: Rayon; shared-MPMC SpinThenPark(0) and AgaveBackoff;
+RTRB SpinThenPark(0) with backlog 1 or 2. Queue-capacity label q64 is fixed.
+Twenty randomized blocks contain one warm-up and two measured runs per
+configuration; profiling uses standard perf. This yields 48 campaigns, 4800
+invocations, 9600 measured physical runs and 4800 warm-ups. The matrix is
+intentionally not a full policy/spin/backlog factorial.
+
+### Dataset and window handling
+
+The BLS workload now permits a fixed dataset of 2500 distinct work units
+and a separate per-run `work_units` count. The cached dataset is loaded once
+per invocation, then only its first `work_units` are submitted: no within-run
+wrapping or repeated verification of the same certificate. Each scheduled
+test uses:
+
+```text
+N = ceil(scheduled_arrival_rate * 0.200 seconds) + 1
+scheduled_arrival_window = (N - 1) / scheduled_arrival_rate >= 200 ms
+```
+
+The same N and arrivals are used for every scheduler configuration in a
+worker/load/arrival-mode campaign. For the highest preliminary point (16
+workers, 200%), N = 2091, within the 2500-certificate dataset capacity.
+The 200 ms minimum concerns the **scheduled submission window**, not a promise
+of 200 ms actual producer progress under backpressure. Elapsed time also
+includes draining all submitted tasks. Inspect observed arrival lateness
+especially at overload points; task-level latency remains unmeasured.
+
+The Rust CLI accepts optional `--dataset-work-units`; omitting it preserves
+the previous cache-size behavior. The existing dataset-identity helper and
+campaign invocation path were adjusted to fingerprint the fixed full input
+dataset rather than each variable-length run. Existing historical campaigns
+are unaffected.
+
+### Reproducibility and remaining validation
+
+The experiment generator is
+`experiments/studies/bls_normalized_load.py` and its separate explanation
+is `experiments/studies/BLs_NORMALIZED_LOAD.md`. `--check` previews the
+plan and `--write` creates campaign TOMLs plus a JSON manifest. It does
+not run measurements. Planned test cases cover the load grid, minimum
+window, dataset bounds, matched arrival modes, and the 16-worker 200% case.
+
+These changes were committed on
+`experiment/normalized-bls-load`. No Rust compilation, perf execution,
+or host-level benchmark validation has yet been completed. Before collecting
+the full study, run formatting, tests, clippy, a small end-to-end pilot, and
+check the arrival-lateness and distribution diagnostics. New runs must be
+analyzed as their own acquisition series; historical 1000-work-unit results
+are not interchangeable repeated measurements.
+
+## 2026-10-31: Empirical throughput baselines before a denser load sweep
+
+### Why this measurement was added
+
+The normalized BLS offered-load campaign has been collected and analyzed:
+48 campaigns across 2/4/8/16 workers, fixed and bursty arrivals, and six
+reference-relative load levels (25%, 50%, 75%, 93.75%, 110%, 200%). It
+compares Rayon with four Threadance queue/wait configurations; Bevy was
+implemented in the harness but was not included in that campaign. The
+analysis retains raw runs and uses randomized-block comparisons and 95%
+paired bootstrap confidence intervals for the reported effects.
+
+The preliminary capacity vector used to select offered arrival rates was
+based on earlier Rayon all-at-once results. It was suitable for choosing
+common *offered* rates within a worker count, but it did not tell us the
+measured saturated throughput of **each** scheduler. Moreover, some
+load-response plots appear to change character somewhere between the
+25% and 50% sampled points, while others change near saturation.
+Six widely spaced load levels cannot locate these changes or distinguish
+a gradual curve from a sharp regime transition.
+
+**Decision:** before adding more load-sweep samples, measure
+scheduler-specific empirical saturated throughput under a common BLS
+workload. Include Bevy alongside Rayon and Threadance. Use the resulting
+distributions and uncertainty estimates to design the next experiment,
+rather than treating the old Rayon capacity assumptions as known exact
+values for every scheduler.
+
+### Implemented finite-batch saturation experiment
+
+The independent study was added on branch
+`experiment/bls-saturated-throughput`, with definitions at:
+
+- `experiments/studies/bls_saturated_throughput_template.toml`
+- `experiments/studies/bls_saturated_throughput.toml`
+- `experiments/studies/BLS_SATURATED_THROUGHPUT.md`
+
+The experiment uses the common randomized-block campaign runner; no new
+scheduler implementation or custom measurement engine was necessary.
+Bevy's existing harness adapter is `bevy_tasks::TaskPool`, not the
+Bevy ECS system scheduler.
+
+Design:
+
+- **Workload:** 2500 distinct cached BLS certificate verifications per
+  measured run (2000 validators, 1600 signers, one certificate per work
+  unit, workload seed 1). Dataset creation/loading is outside the
+  measurement interval, and all schedulers use the same input data.
+- **Workers:** 2, 4, 8, and 16.
+- **Schedulers:** Rayon; Bevy TaskPool; Threadance bounded MPMC with
+  SpinThenPark(0); Threadance MPMC with AgaveBackoff; segmented RTRB
+  hot-first with SpinThenPark(0) and backlog 1 or 2. Threadance queue
+  capacity is 64 in all four configurations.
+- **Delivery:** `all-at-once`; all work units are submitted as fast as
+  the respective scheduler permits. A bounded queue may block its
+  producer, so the measured interval includes any resulting
+  backpressure.
+- **Repetition:** 30 randomized blocks per worker count, six
+  configurations per block, one warm-up and two measured repetitions
+  per condition. Four campaigns yield 720 harness invocations, 720
+  warm-ups, and 1440 measured physical runs.
+- **Collection:** standard Linux perf profile, SQLite raw runs,
+  campaign metadata, block summaries, and paired bootstrap 95%
+  confidence intervals relative to Rayon. Standard profile does **not**
+  include cache-misses; those need separate deep perf passes.
+- **Execution:** `settle_seconds = 0.0`; there is no artificial delay
+  between configuration invocations. This reduces wall-clock cost but
+  makes temporal drift diagnostics (frequency, temperature, background
+  activity, order/block effects) especially important.
+
+The experimental plan was previewed successfully on the benchmark
+machine. An initial test failed because it expected short scheduler
+IDs, whereas the generic study expander deliberately uses canonical
+IDs encoding queue topology and policy; the **test**, not the
+experiment design, was corrected in commit `0a295ac`.
+Collection was launched on the user's benchmark host; **no throughput
+measurement values are recorded in this note yet**. Conclusions must
+wait for the completed raw runs and statistical analysis.
+
+### What throughput means in this experiment
+
+For each completed run, the harness records:
+
+```text
+observed_throughput_WU_per_s = completed_work_units / elapsed_seconds
+```
+
+Since each run contains 2500 independent work units, these are
+**measured finite-batch saturated throughputs**, not theoretical
+capacities. They estimate how quickly each actual pool can process a
+large immediately available batch under this hardware, dataset, and
+configuration, including submission, queueing, potential producer
+backpressure, execution, and final completion synchronization.
+
+They do **not** independently establish the maximum *sustainable*
+throughput under indefinite steady arrivals, nor do they directly
+measure CPU utilization. Separate `task-clock` and hardware perf
+counters quantify resource consumption. A long-running capacity
+experiment may be useful later, but is not a prerequisite for the
+next exploratory sweep, provided this finite-batch definition and its
+uncertainty remain explicit.
+
+After collection, report throughput distributions, mean and median,
+sample variance, 95% block-bootstrap confidence intervals and paired
+comparisons to Rayon for every worker count. Check outliers,
+multimodality, non-stationarity/time drift, and scaling from 8 physical
+cores to 16 SMT threads. Avoid treating a single point estimate as a
+perfectly known capacity.
+
+### How this informs the next stage
+
+1. Retain **absolute scheduled arrival rate** (WU/s) as the common
+   treatment for direct, same-workload scheduler comparisons. Also
+   report scheduled arrival rate divided by each scheduler's own
+   empirically measured finite-batch saturated throughput. Label the
+   latter as a derived scheduler-relative *proxy* for load, not true
+   CPU utilization or an independently validated steady-state
+   traffic intensity.
+2. Measure **achieved throughput** and actual producer-submission
+   timing alongside scheduled offered rate. The old normalized-load
+   campaign demonstrated why this matters: at overload, bounded-queue
+   backpressure can delay actual submissions beyond the intended
+   arrival window. Do not attribute an effect solely to wait/wake
+   behavior when queue saturation and producer blocking also change.
+3. Add finer arrival-rate sampling to test the apparent changes
+   between 25% and 50%: provisionally use 5-percentage-point steps
+   over roughly 25–70%, then refine around 70–120% and any empirically
+   identified change points. Choose exact WU/s values after the
+   throughput measurements and a diagnostic review of the old curves;
+   do not presume a real threshold at 40% from unsampled space.
+4. Retain fixed and bursty arrival modes, consistent input data,
+   randomized blocks, raw per-run data, and bootstrap intervals.
+   Focus on elapsed/drain, achieved throughput, CPU time and
+   cycles/WU, branch misses/WU, context switches/WU, and arrival
+   lateness; use targeted deep profiling for cache misses if needed.
+5. Explore quadratic/cubic **polynomial fits** as descriptive models
+   only after collecting a denser grid. Compare out-of-block
+   predictive performance against segmented regression or smoothing
+   splines, use block-level resampling for confidence bands, inspect
+   residual structure and multimodality, and avoid extrapolation
+   beyond the measured range. A sharp-looking change is a hypothesis
+   about queue/wake/backpressure regime changes, **not proof** of such
+   a mechanism.
+
+The longer-term thesis goal remains a configuration-selection rule
+for Threadance: identify when a wait/wake or queue policy reduces CPU
+resource use without unacceptable latency or throughput loss, and
+support that rule with statistically defensible measurements.
+
+## 2026-10-31: Observations from the saturated-throughput campaign
+
+The four all-at-once BLS throughput campaigns completed on the benchmark
+host: 2, 4, 8 and 16 workers, six scheduler configurations and 30 randomized
+blocks per worker count. They produced 1440 measured runs (60 per
+worker/scheduler condition). The archived environment metadata identifies
+harness commit `0a295ac741d1a410eec3976bbff22fcdd7bb5bba` and
+Threadance commit `7435d61195d7a0144cc3aa3d6bbe77ff179b929d`.
+
+The raw runs contain two measured repetitions after one warm-up in each
+invocation. With 8 workers, Rayon averaged 4728.7 WU/s in the first measured
+repetition and 4897.8 WU/s in the second (+3.58%). With 16 workers,
+the corresponding means were 5095.8 and 5276.5 WU/s (+3.57%).
+For Rayon at 8 workers, the second measured repetition was faster in
+all 30 blocks. The order-related difference was also visible in
+other schedulers; its cause has not been established.
+
+Hartigan's dip test was applied to the 24 pooled throughput samples
+(4 worker counts × 6 configurations, 60 measurements each).
+Nine of the 24 tests rejected unimodality at adjusted p < 0.05 using
+Holm's multiple-testing correction. These rejections occurred among
+the 8- and 16-worker conditions; none occurred at 2 or 4 workers
+after that correction. Separate dip tests on first and second measured
+repetitions (48 samples of n=30) produced no Holm-adjusted
+rejections at 0.05.
+
+For pooled Rayon throughput, the observed dip statistics were
+D=0.10447 at 8 workers and D=0.13691 at 16 workers.
+The corresponding Holm-adjusted Monte Carlo p-values were 0.00048
+for both. The dip test indicates departures from unimodality in those
+pooled samples; it does not establish exactly two modes. Failure to
+reject unimodality in the smaller separated samples does not establish
+that those distributions are unimodal. The dip-test calibration also
+assumes independent identically distributed samples; the observed
+within-invocation run-order effect needs to be considered when
+interpreting these p-values.
+
+No causal explanation for the run-order effect or for the pooled
+distribution shapes has been established.
+
+## 2026-10-31: BLS Rayon run-order and warmup-count diagnostics
+
+### Initial observation and run-position replication
+
+The finite-batch saturated-throughput campaign used one unprofiled warmup
+followed by two standard-perf measured repetitions. It exhibited a
+reproducible run-order effect at 8 and 16 Rayon workers, as documented above.
+
+To inspect the progression rather than pool the two repetitions, a separate
+Rayon-only run-order diagnostic executed 20 independent process invocations
+for each of 4, 8, and 16 workers. Each invocation constructed a new Rayon
+pool, executed one unprofiled 2500-certificate warmup, and then recorded
+eight consecutive standard-perf measured 2500-certificate batches, retaining
+their positions and raw counters (480 measured runs in total).
+
+Mean throughput (WU/s) by measured position:
+
+| Workers | Position 1 | Position 2 | Position 3 | Position 8 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 2585.46 | 2583.18 | 2585.00 | 2583.34 |
+| 8 | 4780.53 | 4905.20 | 4918.92 | 4909.80 |
+| 16 | 5095.77 | 5305.15 | 5299.67 | 5299.28 |
+
+For 16 workers, position 2 exceeded position 1 in all 20 independent
+invocations: mean within-invocation relative difference +4.109%, 95%
+block-bootstrap CI [+4.011%, +4.207%]. For 8 workers the corresponding
+difference was +2.621%, CI [+1.940%, +3.187%], positive in 18/20
+invocations. The later positions were close in their averages; this
+observation alone does not prove strict stationarity or a specific cause.
+
+### Controlled warmup-count sweep
+
+A follow-up study varied the number of unprofiled complete BLS batches
+before measurement: **1, 2, 4, 8 warmups**. Rayon was tested at 4, 8 and
+16 workers. Each worker-count campaign used 20 randomized blocks; each
+block randomized four distinct processes/conditions (one per warmup
+count). A pool was constructed once per process and reused for its
+warmups and eight subsequent standard-perf measured batches. The same
+cached 2500-certificate workload, seed, release harness path and
+finite-batch all-at-once delivery were retained.
+
+The completed sweep yielded **240 independent process invocations,
+900 unprofiled warmup batches, and 1920 measured physical runs**.
+
+Mean throughput of the **first measured batch** (WU/s):
+
+| Workers | 1 warmup | 2 warmups | 4 warmups | 8 warmups |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 2599.82 | 2599.66 | 2600.23 | 2601.33 |
+| 8 | 4758.40 | 4920.75 | 4918.79 | 4924.22 |
+| 16 | 5109.43 | 5291.55 | 5300.66 | 5299.41 |
+
+Mean **within-process** change from measured position 1 to position 2
+(95% bootstrap CI across the 20 independent processes per condition):
+
+| Workers | Warmups | Position 2 vs 1 | 95% CI |
+| --- | ---: | ---: | --- |
+| 4 | 1 | -0.019% | [-0.076%, +0.028%] |
+| 8 | 1 | +3.056% | [+2.597%, +3.560%] |
+| 8 | 2 | -0.272% | [-0.514%, -0.090%] |
+| 8 | 4 | -0.170% | [-0.377%, +0.038%] |
+| 8 | 8 | -0.405% | [-0.691%, -0.141%] |
+| 16 | 1 | +3.457% | [+2.644%, +3.941%] |
+| 16 | 2 | -0.119% | [-0.258%, +0.051%] |
+| 16 | 4 | -0.133% | [-0.216%, -0.063%] |
+| 16 | 8 | -0.173% | [-0.272%, -0.072%] |
+
+**Observation:** increasing the Rayon warmup count from one to two
+removed the large +3–4% improvement of the second measured batch at
+8/16 workers in this finite-batch protocol. More warmups did not show
+a comparably large increase in first-position throughput. Residual
+sub-percent differences, including small statistically distinguishable
+decreases in some conditions, remain; "two warmups" is therefore
+an empirically supported *minimum for removing the major first-run
+anomaly*, **not proof of complete stationarity**.
+
+The first measured batch is standard-perf profiled under every warmup
+count. Thus the large difference is not uniquely caused by the first
+measured batch's perf attachment. The experiment does **not** isolate
+cache/TLB state, CPU frequency, CPU affinity, branch prediction, or
+kernel scheduling, and it cannot establish a physical mechanism.
+
+Input correctness checks in the independent audit found the same
+2500 distinct BLS tasks executed each run; this study does not indicate
+that cryptographic results were skipped or memoized. The study
+measures finite-batch completion throughput, not independently validated
+sustainable service capacity. User-only perf event scope in the archived
+saturated-throughput data also makes recorded zero context-switch and
+cpu-migration counts unusable for comparative scheduler claims.
+
+### Consequence for the benchmarking methodology
+
+- **Retain all original raw datasets and acquisition metadata.** They are
+  valid observations of the one-warmup protocol and useful for exploring
+  run-order effects. Do not quietly relabel them as steady-state data,
+  discard only the inconvenient positions, or combine new runs with old
+  ones without labeling the protocol change.
+- **Do not use the pooled one-warmup finite-batch throughput estimates
+  as a validated steady-condition reference.** The original 1440-run
+  multi-scheduler campaign needs a new acquisition with an explicitly
+  justified warmup protocol before its rankings are treated as
+  confirmatory. Run-position analysis of the old samples remains useful
+  for diagnosis.
+- **Verify warmup adequacy for Bevy and every Threadance configuration**
+  rather than presuming the Rayon result transfers unchanged. At least
+  two complete warmups are supported by these Rayon measurements for
+  this BLS task/host; a universal warmup count is not established.
+- Previously collected normalized offered-load campaigns can remain
+  **exploratory** under their archived protocols. Repeat only the
+  decision-critical comparisons for confirmation once reference-rate
+  definitions, warmup adequacy and usable perf counters are settled;
+  do not automatically re-run all 48 campaigns before reviewing them.
+- After confirming warmup behavior across schedulers, rerun the
+  saturation comparison on the same fixed workload with consistent
+  per-condition warmup rules, retain individual physical-run positions
+  and block-paired uncertainty, and reassess the reference throughput
+  for future load sweeps. Separately address the kernel-event perf scope
+  and the distinction between finite-batch throughput and sustainable
+  capacity.
+
+Raw diagnostic definitions and reports:
+
+- `experiments/studies/bls_run_order_diagnostic.toml`,
+  `experiments/studies/analyze_bls_run_order.py`;
+- `experiments/studies/bls_warmup_sweep.toml`,
+  `experiments/studies/analyze_bls_warmup_sweep.py`;
+- `results/studies/bls-run-order-diagnostic/campaigns/`;
+- `results/studies/bls-warmup-sweep/campaigns/`.
+
+No causal explanation for the warmup effect has yet been established.
+
+## 2026-10-31: Decision to repeat the BLS saturation comparison
+
+### Evidence and interpretation
+
+The Rayon run-order diagnostic (20 independently launched processes per
+worker count, one unprofiled warmup followed by eight standard-perf
+measurements) showed that the first measured batch was systematically
+slower than later batches at 8 and 16 workers, while the 4-worker control
+had no comparable discontinuity. At 8 workers, measured positions 1/2
+averaged 4780.53/4905.20 WU/s; at 16 workers, 5095.77/5305.15 WU/s.
+Subsequent measured positions were close in their means, without proof
+of strict stationarity.
+
+The randomized warmup-count sweep (20 blocks for each of 4, 8, 16
+workers, with 1/2/4/8 complete unprofiled warmups and eight measured
+runs per process; 1920 physical measured runs) established an operational
+remedy for this protocol. At 8 workers, first-position throughput
+rose from 4758.40 WU/s after one warmup to 4920.75 WU/s after two;
+at 16 workers, from 5109.43 to 5291.55 WU/s. The within-process
+position-2 versus position-1 differences changed from +3.056%
+(95% block-bootstrap CI [+2.597%, +3.560%]) to -0.272%
+(CI [-0.514%, -0.090%]) at 8 workers, and from +3.457%
+(CI [+2.644%, +3.941%]) to -0.119%
+(CI [-0.258%, +0.051%]) at 16 workers. The 4-worker control
+remained close to 2600 WU/s with every warmup count.
+
+Thus *one full warmup was insufficient to remove the large first-run
+effect for Rayon at 8/16 workers in the measured BLS batch protocol*;
+two removed that large effect in this study. Small residual deviations
+and other non-stationarities have not been ruled out. Neither CPU-cache
+warming, branch prediction, frequency, affinity, nor scheduler
+behavior has been causally isolated. The data should not be described
+as proving that a cache takes exactly two batches to warm.
+
+### Measurement defect and remedial instrumentation
+
+An independent audit of the original 1440-run multi-scheduler saturation
+campaign found that standard perf recorded `context-switches:u=0` and
+`cpu-migrations:u=0` in every run. These user-only values do **not**
+measure kernel scheduler events and must not be analyzed as genuine
+zero context switches/migrations. On the benchmark host the observed
+restriction was `kernel.perf_event_paranoid=2`. For new runs, request
+a permissive enough scope (normally `kernel.perf_event_paranoid=1`
+for per-process kernel-inclusive events) and check actual event names,
+counter availability and nonzero context switches in a deliberate
+sleeping-task preflight. Do not presume that the kernel configuration
+has been successfully changed until the host-side check passes.
+
+The new `experiments/studies/check_perf_scope.py` verifies that
+preflight independently of the large campaign. It is a required manual
+precondition, **not** a measurement result and not an automatic
+per-run check inside the standard collection engine. Recorded zero
+migrations can still be correct if event scope is verified.
+
+### Decision and remaining limitations
+
+The original one-warmup comparison is retained without alteration
+as evidence for its exact measurement protocol, including the run-order
+effect. It is not used as a validated stable-condition throughput
+reference. Prior normalized-load studies also remain archived;
+they do not automatically require wholesale repetition, but any
+decision-critical results need revalidation under the amended protocol.
+
+A fresh, independent comparison is defined in
+`experiments/studies/bls_saturation_recheck.toml` on
+`experiment/bls-saturation-recheck`: the original six schedulers
+(Rayon, Bevy TaskPool, Threadance MPMC SpinThenPark(0) and
+AgaveBackoff, Threadance RTRB backlog 1/2), 2/4/8/16 workers,
+2500 identical BLS certificates and all-at-once delivery,
+30 randomized blocks, **four unprofiled warmups** and **three
+standard-perf measured runs** per condition. Its planned totals are
+720 process invocations, 2880 warmup batches and 2160 measured
+physical runs, stored in a new result directory.
+
+Four warmups were selected conservatively, not because they were
+proven sufficient for all schedulers: only Rayon has the above
+warmup-count evidence. Preserve individual measured positions
+during analysis and verify whether Bevy/Threadance also settle;
+if not, modify the protocol based on diagnostics rather than pooling
+biased positions. The new campaign has been defined and CI-checked,
+**but no measurement outcomes from it are yet recorded here**.
+
+Even a stable finite-batch throughput under this protocol is not an
+independent estimate of indefinitely sustainable steady-state
+capacity. Report its operational definition, run-position sensitivity,
+resource counters with validated scope, and block-paired uncertainty
+rather than asserting a physical mechanism or exact service-capacity
+limit.

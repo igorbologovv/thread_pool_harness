@@ -1,0 +1,16 @@
+[study]
+name = "bls-saturated-throughput"
+template = "experiments/studies/bls_saturated_throughput_template.toml"
+output_dir = "experiments/generated/bls-saturated-throughput"
+output_root = "results/studies/bls-saturated-throughput/campaigns"
+max_invocations = 1000
+
+[axes]
+workers = [2, 4, 8, 16]
+
+[overrides]
+blocks = 30
+warmup_runs_per_block = 1
+measured_runs_per_block = 2
+settle_seconds = 0.0
+profile = "standard"

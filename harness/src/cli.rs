@@ -93,9 +93,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     pub arrival_seed: u64,
 
-    /// Number of independently schedulable work units.
+    /// Number of independently schedulable work units in this run.
     #[arg(long)]
     pub work_units: NonZeroUsize,
+
+    /// Number of distinct BLS work units in the cached input dataset.
+    /// Defaults to --work-units for backward compatibility; must be >= --work-units.
+    #[arg(long)]
+    pub dataset_work_units: Option<NonZeroUsize>,
 
     /// Number of independent matrix operations performed by each compute-heavy
     /// work unit.
