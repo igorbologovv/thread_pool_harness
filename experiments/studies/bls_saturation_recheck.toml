@@ -1,0 +1,16 @@
+[study]
+name = "bls-saturation-recheck"
+template = "experiments/studies/bls_saturation_recheck_template.toml"
+output_dir = "experiments/generated/bls-saturation-recheck"
+output_root = "results/studies/bls-saturation-recheck/campaigns"
+max_invocations = 1000
+
+[axes]
+workers = [2, 4, 8, 16]
+
+[overrides]
+blocks = 30
+warmup_runs_per_block = 4
+measured_runs_per_block = 3
+settle_seconds = 0.0
+profile = "standard"
