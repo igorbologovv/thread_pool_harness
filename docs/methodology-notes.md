@@ -945,3 +945,134 @@ interpreting these p-values.
 
 No causal explanation for the run-order effect or for the pooled
 distribution shapes has been established.
+
+## 2026-10-31: BLS Rayon run-order and warmup-count diagnostics
+
+### Initial observation and run-position replication
+
+The finite-batch saturated-throughput campaign used one unprofiled warmup
+followed by two standard-perf measured repetitions. It exhibited a
+reproducible run-order effect at 8 and 16 Rayon workers, as documented above.
+
+To inspect the progression rather than pool the two repetitions, a separate
+Rayon-only run-order diagnostic executed 20 independent process invocations
+for each of 4, 8, and 16 workers. Each invocation constructed a new Rayon
+pool, executed one unprofiled 2500-certificate warmup, and then recorded
+eight consecutive standard-perf measured 2500-certificate batches, retaining
+their positions and raw counters (480 measured runs in total).
+
+Mean throughput (WU/s) by measured position:
+
+| Workers | Position 1 | Position 2 | Position 3 | Position 8 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 2585.46 | 2583.18 | 2585.00 | 2583.34 |
+| 8 | 4780.53 | 4905.20 | 4918.92 | 4909.80 |
+| 16 | 5095.77 | 5305.15 | 5299.67 | 5299.28 |
+
+For 16 workers, position 2 exceeded position 1 in all 20 independent
+invocations: mean within-invocation relative difference +4.109%, 95%
+block-bootstrap CI [+4.011%, +4.207%]. For 8 workers the corresponding
+difference was +2.621%, CI [+1.940%, +3.187%], positive in 18/20
+invocations. The later positions were close in their averages; this
+observation alone does not prove strict stationarity or a specific cause.
+
+### Controlled warmup-count sweep
+
+A follow-up study varied the number of unprofiled complete BLS batches
+before measurement: **1, 2, 4, 8 warmups**. Rayon was tested at 4, 8 and
+16 workers. Each worker-count campaign used 20 randomized blocks; each
+block randomized four distinct processes/conditions (one per warmup
+count). A pool was constructed once per process and reused for its
+warmups and eight subsequent standard-perf measured batches. The same
+cached 2500-certificate workload, seed, release harness path and
+finite-batch all-at-once delivery were retained.
+
+The completed sweep yielded **240 independent process invocations,
+900 unprofiled warmup batches, and 1920 measured physical runs**.
+
+Mean throughput of the **first measured batch** (WU/s):
+
+| Workers | 1 warmup | 2 warmups | 4 warmups | 8 warmups |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 2599.82 | 2599.66 | 2600.23 | 2601.33 |
+| 8 | 4758.40 | 4920.75 | 4918.79 | 4924.22 |
+| 16 | 5109.43 | 5291.55 | 5300.66 | 5299.41 |
+
+Mean **within-process** change from measured position 1 to position 2
+(95% bootstrap CI across the 20 independent processes per condition):
+
+| Workers | Warmups | Position 2 vs 1 | 95% CI |
+| --- | ---: | ---: | --- |
+| 4 | 1 | -0.019% | [-0.076%, +0.028%] |
+| 8 | 1 | +3.056% | [+2.597%, +3.560%] |
+| 8 | 2 | -0.272% | [-0.514%, -0.090%] |
+| 8 | 4 | -0.170% | [-0.377%, +0.038%] |
+| 8 | 8 | -0.405% | [-0.691%, -0.141%] |
+| 16 | 1 | +3.457% | [+2.644%, +3.941%] |
+| 16 | 2 | -0.119% | [-0.258%, +0.051%] |
+| 16 | 4 | -0.133% | [-0.216%, -0.063%] |
+| 16 | 8 | -0.173% | [-0.272%, -0.072%] |
+
+**Observation:** increasing the Rayon warmup count from one to two
+removed the large +3–4% improvement of the second measured batch at
+8/16 workers in this finite-batch protocol. More warmups did not show
+a comparably large increase in first-position throughput. Residual
+sub-percent differences, including small statistically distinguishable
+decreases in some conditions, remain; "two warmups" is therefore
+an empirically supported *minimum for removing the major first-run
+anomaly*, **not proof of complete stationarity**.
+
+The first measured batch is standard-perf profiled under every warmup
+count. Thus the large difference is not uniquely caused by the first
+measured batch's perf attachment. The experiment does **not** isolate
+cache/TLB state, CPU frequency, CPU affinity, branch prediction, or
+kernel scheduling, and it cannot establish a physical mechanism.
+
+Input correctness checks in the independent audit found the same
+2500 distinct BLS tasks executed each run; this study does not indicate
+that cryptographic results were skipped or memoized. The study
+measures finite-batch completion throughput, not independently validated
+sustainable service capacity. User-only perf event scope in the archived
+saturated-throughput data also makes recorded zero context-switch and
+cpu-migration counts unusable for comparative scheduler claims.
+
+### Consequence for the benchmarking methodology
+
+- **Retain all original raw datasets and acquisition metadata.** They are
+  valid observations of the one-warmup protocol and useful for exploring
+  run-order effects. Do not quietly relabel them as steady-state data,
+  discard only the inconvenient positions, or combine new runs with old
+  ones without labeling the protocol change.
+- **Do not use the pooled one-warmup finite-batch throughput estimates
+  as a validated steady-condition reference.** The original 1440-run
+  multi-scheduler campaign needs a new acquisition with an explicitly
+  justified warmup protocol before its rankings are treated as
+  confirmatory. Run-position analysis of the old samples remains useful
+  for diagnosis.
+- **Verify warmup adequacy for Bevy and every Threadance configuration**
+  rather than presuming the Rayon result transfers unchanged. At least
+  two complete warmups are supported by these Rayon measurements for
+  this BLS task/host; a universal warmup count is not established.
+- Previously collected normalized offered-load campaigns can remain
+  **exploratory** under their archived protocols. Repeat only the
+  decision-critical comparisons for confirmation once reference-rate
+  definitions, warmup adequacy and usable perf counters are settled;
+  do not automatically re-run all 48 campaigns before reviewing them.
+- After confirming warmup behavior across schedulers, rerun the
+  saturation comparison on the same fixed workload with consistent
+  per-condition warmup rules, retain individual physical-run positions
+  and block-paired uncertainty, and reassess the reference throughput
+  for future load sweeps. Separately address the kernel-event perf scope
+  and the distinction between finite-batch throughput and sustainable
+  capacity.
+
+Raw diagnostic definitions and reports:
+
+- `experiments/studies/bls_run_order_diagnostic.toml`,
+  `experiments/studies/analyze_bls_run_order.py`;
+- `experiments/studies/bls_warmup_sweep.toml`,
+  `experiments/studies/analyze_bls_warmup_sweep.py`;
+- `results/studies/bls-run-order-diagnostic/campaigns/`;
+- `results/studies/bls-warmup-sweep/campaigns/`.
+
+No causal explanation for the warmup effect has yet been established.
