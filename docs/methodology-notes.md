@@ -756,3 +756,152 @@ the full study, run formatting, tests, clippy, a small end-to-end pilot, and
 check the arrival-lateness and distribution diagnostics. New runs must be
 analyzed as their own acquisition series; historical 1000-work-unit results
 are not interchangeable repeated measurements.
+
+## 2026-10-31: Empirical throughput baselines before a denser load sweep
+
+### Why this measurement was added
+
+The normalized BLS offered-load campaign has been collected and analyzed:
+48 campaigns across 2/4/8/16 workers, fixed and bursty arrivals, and six
+reference-relative load levels (25%, 50%, 75%, 93.75%, 110%, 200%). It
+compares Rayon with four Threadance queue/wait configurations; Bevy was
+implemented in the harness but was not included in that campaign. The
+analysis retains raw runs and uses randomized-block comparisons and 95%
+paired bootstrap confidence intervals for the reported effects.
+
+The preliminary capacity vector used to select offered arrival rates was
+based on earlier Rayon all-at-once results. It was suitable for choosing
+common *offered* rates within a worker count, but it did not tell us the
+measured saturated throughput of **each** scheduler. Moreover, some
+load-response plots appear to change character somewhere between the
+25% and 50% sampled points, while others change near saturation.
+Six widely spaced load levels cannot locate these changes or distinguish
+a gradual curve from a sharp regime transition.
+
+**Decision:** before adding more load-sweep samples, measure
+scheduler-specific empirical saturated throughput under a common BLS
+workload. Include Bevy alongside Rayon and Threadance. Use the resulting
+distributions and uncertainty estimates to design the next experiment,
+rather than treating the old Rayon capacity assumptions as known exact
+values for every scheduler.
+
+### Implemented finite-batch saturation experiment
+
+The independent study was added on branch
+`experiment/bls-saturated-throughput`, with definitions at:
+
+- `experiments/studies/bls_saturated_throughput_template.toml`
+- `experiments/studies/bls_saturated_throughput.toml`
+- `experiments/studies/BLS_SATURATED_THROUGHPUT.md`
+
+The experiment uses the common randomized-block campaign runner; no new
+scheduler implementation or custom measurement engine was necessary.
+Bevy's existing harness adapter is `bevy_tasks::TaskPool`, not the
+Bevy ECS system scheduler.
+
+Design:
+
+- **Workload:** 2500 distinct cached BLS certificate verifications per
+  measured run (2000 validators, 1600 signers, one certificate per work
+  unit, workload seed 1). Dataset creation/loading is outside the
+  measurement interval, and all schedulers use the same input data.
+- **Workers:** 2, 4, 8, and 16.
+- **Schedulers:** Rayon; Bevy TaskPool; Threadance bounded MPMC with
+  SpinThenPark(0); Threadance MPMC with AgaveBackoff; segmented RTRB
+  hot-first with SpinThenPark(0) and backlog 1 or 2. Threadance queue
+  capacity is 64 in all four configurations.
+- **Delivery:** `all-at-once`; all work units are submitted as fast as
+  the respective scheduler permits. A bounded queue may block its
+  producer, so the measured interval includes any resulting
+  backpressure.
+- **Repetition:** 30 randomized blocks per worker count, six
+  configurations per block, one warm-up and two measured repetitions
+  per condition. Four campaigns yield 720 harness invocations, 720
+  warm-ups, and 1440 measured physical runs.
+- **Collection:** standard Linux perf profile, SQLite raw runs,
+  campaign metadata, block summaries, and paired bootstrap 95%
+  confidence intervals relative to Rayon. Standard profile does **not**
+  include cache-misses; those need separate deep perf passes.
+- **Execution:** `settle_seconds = 0.0`; there is no artificial delay
+  between configuration invocations. This reduces wall-clock cost but
+  makes temporal drift diagnostics (frequency, temperature, background
+  activity, order/block effects) especially important.
+
+The experimental plan was previewed successfully on the benchmark
+machine. An initial test failed because it expected short scheduler
+IDs, whereas the generic study expander deliberately uses canonical
+IDs encoding queue topology and policy; the **test**, not the
+experiment design, was corrected in commit `0a295ac`.
+Collection was launched on the user's benchmark host; **no throughput
+measurement values are recorded in this note yet**. Conclusions must
+wait for the completed raw runs and statistical analysis.
+
+### What throughput means in this experiment
+
+For each completed run, the harness records:
+
+```text
+observed_throughput_WU_per_s = completed_work_units / elapsed_seconds
+```
+
+Since each run contains 2500 independent work units, these are
+**measured finite-batch saturated throughputs**, not theoretical
+capacities. They estimate how quickly each actual pool can process a
+large immediately available batch under this hardware, dataset, and
+configuration, including submission, queueing, potential producer
+backpressure, execution, and final completion synchronization.
+
+They do **not** independently establish the maximum *sustainable*
+throughput under indefinite steady arrivals, nor do they directly
+measure CPU utilization. Separate `task-clock` and hardware perf
+counters quantify resource consumption. A long-running capacity
+experiment may be useful later, but is not a prerequisite for the
+next exploratory sweep, provided this finite-batch definition and its
+uncertainty remain explicit.
+
+After collection, report throughput distributions, mean and median,
+sample variance, 95% block-bootstrap confidence intervals and paired
+comparisons to Rayon for every worker count. Check outliers,
+multimodality, non-stationarity/time drift, and scaling from 8 physical
+cores to 16 SMT threads. Avoid treating a single point estimate as a
+perfectly known capacity.
+
+### How this informs the next stage
+
+1. Retain **absolute scheduled arrival rate** (WU/s) as the common
+   treatment for direct, same-workload scheduler comparisons. Also
+   report scheduled arrival rate divided by each scheduler's own
+   empirically measured finite-batch saturated throughput. Label the
+   latter as a derived scheduler-relative *proxy* for load, not true
+   CPU utilization or an independently validated steady-state
+   traffic intensity.
+2. Measure **achieved throughput** and actual producer-submission
+   timing alongside scheduled offered rate. The old normalized-load
+   campaign demonstrated why this matters: at overload, bounded-queue
+   backpressure can delay actual submissions beyond the intended
+   arrival window. Do not attribute an effect solely to wait/wake
+   behavior when queue saturation and producer blocking also change.
+3. Add finer arrival-rate sampling to test the apparent changes
+   between 25% and 50%: provisionally use 5-percentage-point steps
+   over roughly 25–70%, then refine around 70–120% and any empirically
+   identified change points. Choose exact WU/s values after the
+   throughput measurements and a diagnostic review of the old curves;
+   do not presume a real threshold at 40% from unsampled space.
+4. Retain fixed and bursty arrival modes, consistent input data,
+   randomized blocks, raw per-run data, and bootstrap intervals.
+   Focus on elapsed/drain, achieved throughput, CPU time and
+   cycles/WU, branch misses/WU, context switches/WU, and arrival
+   lateness; use targeted deep profiling for cache misses if needed.
+5. Explore quadratic/cubic **polynomial fits** as descriptive models
+   only after collecting a denser grid. Compare out-of-block
+   predictive performance against segmented regression or smoothing
+   splines, use block-level resampling for confidence bands, inspect
+   residual structure and multimodality, and avoid extrapolation
+   beyond the measured range. A sharp-looking change is a hypothesis
+   about queue/wake/backpressure regime changes, **not proof** of such
+   a mechanism.
+
+The longer-term thesis goal remains a configuration-selection rule
+for Threadance: identify when a wait/wake or queue policy reduces CPU
+resource use without unacceptable latency or throughput loss, and
+support that rule with statistically defensible measurements.
