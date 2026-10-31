@@ -39,7 +39,7 @@ def analyze(root: Path, replicates=10000):
         raise ValueError(f"Expected 3 complete campaigns, got {len(paths)}")
     summary, paired, comparisons = [], [], []
     for path in paths:
-        workers = int(path.parent.name.split("-w", 1)[1].split("-", 1)[0])
+        workers = int(path.parent.name.removeprefix("bls-warmup-sweep-w").split("-", 1)[0])
         if workers not in WORKERS:
             raise ValueError("Unexpected worker count")
         data = {}
