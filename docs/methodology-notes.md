@@ -1076,3 +1076,92 @@ Raw diagnostic definitions and reports:
 - `results/studies/bls-warmup-sweep/campaigns/`.
 
 No causal explanation for the warmup effect has yet been established.
+
+## 2026-10-31: Decision to repeat the BLS saturation comparison
+
+### Evidence and interpretation
+
+The Rayon run-order diagnostic (20 independently launched processes per
+worker count, one unprofiled warmup followed by eight standard-perf
+measurements) showed that the first measured batch was systematically
+slower than later batches at 8 and 16 workers, while the 4-worker control
+had no comparable discontinuity. At 8 workers, measured positions 1/2
+averaged 4780.53/4905.20 WU/s; at 16 workers, 5095.77/5305.15 WU/s.
+Subsequent measured positions were close in their means, without proof
+of strict stationarity.
+
+The randomized warmup-count sweep (20 blocks for each of 4, 8, 16
+workers, with 1/2/4/8 complete unprofiled warmups and eight measured
+runs per process; 1920 physical measured runs) established an operational
+remedy for this protocol. At 8 workers, first-position throughput
+rose from 4758.40 WU/s after one warmup to 4920.75 WU/s after two;
+at 16 workers, from 5109.43 to 5291.55 WU/s. The within-process
+position-2 versus position-1 differences changed from +3.056%
+(95% block-bootstrap CI [+2.597%, +3.560%]) to -0.272%
+(CI [-0.514%, -0.090%]) at 8 workers, and from +3.457%
+(CI [+2.644%, +3.941%]) to -0.119%
+(CI [-0.258%, +0.051%]) at 16 workers. The 4-worker control
+remained close to 2600 WU/s with every warmup count.
+
+Thus *one full warmup was insufficient to remove the large first-run
+effect for Rayon at 8/16 workers in the measured BLS batch protocol*;
+two removed that large effect in this study. Small residual deviations
+and other non-stationarities have not been ruled out. Neither CPU-cache
+warming, branch prediction, frequency, affinity, nor scheduler
+behavior has been causally isolated. The data should not be described
+as proving that a cache takes exactly two batches to warm.
+
+### Measurement defect and remedial instrumentation
+
+An independent audit of the original 1440-run multi-scheduler saturation
+campaign found that standard perf recorded `context-switches:u=0` and
+`cpu-migrations:u=0` in every run. These user-only values do **not**
+measure kernel scheduler events and must not be analyzed as genuine
+zero context switches/migrations. On the benchmark host the observed
+restriction was `kernel.perf_event_paranoid=2`. For new runs, request
+a permissive enough scope (normally `kernel.perf_event_paranoid=1`
+for per-process kernel-inclusive events) and check actual event names,
+counter availability and nonzero context switches in a deliberate
+sleeping-task preflight. Do not presume that the kernel configuration
+has been successfully changed until the host-side check passes.
+
+The new `experiments/studies/check_perf_scope.py` verifies that
+preflight independently of the large campaign. It is a required manual
+precondition, **not** a measurement result and not an automatic
+per-run check inside the standard collection engine. Recorded zero
+migrations can still be correct if event scope is verified.
+
+### Decision and remaining limitations
+
+The original one-warmup comparison is retained without alteration
+as evidence for its exact measurement protocol, including the run-order
+effect. It is not used as a validated stable-condition throughput
+reference. Prior normalized-load studies also remain archived;
+they do not automatically require wholesale repetition, but any
+decision-critical results need revalidation under the amended protocol.
+
+A fresh, independent comparison is defined in
+`experiments/studies/bls_saturation_recheck.toml` on
+`experiment/bls-saturation-recheck`: the original six schedulers
+(Rayon, Bevy TaskPool, Threadance MPMC SpinThenPark(0) and
+AgaveBackoff, Threadance RTRB backlog 1/2), 2/4/8/16 workers,
+2500 identical BLS certificates and all-at-once delivery,
+30 randomized blocks, **four unprofiled warmups** and **three
+standard-perf measured runs** per condition. Its planned totals are
+720 process invocations, 2880 warmup batches and 2160 measured
+physical runs, stored in a new result directory.
+
+Four warmups were selected conservatively, not because they were
+proven sufficient for all schedulers: only Rayon has the above
+warmup-count evidence. Preserve individual measured positions
+during analysis and verify whether Bevy/Threadance also settle;
+if not, modify the protocol based on diagnostics rather than pooling
+biased positions. The new campaign has been defined and CI-checked,
+**but no measurement outcomes from it are yet recorded here**.
+
+Even a stable finite-batch throughput under this protocol is not an
+independent estimate of indefinitely sustainable steady-state
+capacity. Report its operational definition, run-position sensitivity,
+resource counters with validated scope, and block-paired uncertainty
+rather than asserting a physical mechanism or exact service-capacity
+limit.
