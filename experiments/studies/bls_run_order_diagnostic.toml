@@ -1,0 +1,16 @@
+[study]
+name = "bls-run-order-diagnostic"
+template = "experiments/studies/bls_run_order_diagnostic_template.toml"
+output_dir = "experiments/generated/bls-run-order-diagnostic"
+output_root = "results/studies/bls-run-order-diagnostic/campaigns"
+max_invocations = 60
+
+[axes]
+workers = [4, 8, 16]
+
+[overrides]
+blocks = 20
+warmup_runs_per_block = 1
+measured_runs_per_block = 8
+settle_seconds = 0.0
+profile = "standard"
