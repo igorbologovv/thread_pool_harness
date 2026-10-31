@@ -13,7 +13,7 @@ BLS logic, dataset, perf event selection, perf startup/teardown and measured
 intervals are unchanged. The randomized warmup-order experiment varies
 warmup count, but also necessarily changes total work before recording.
 
-Expected: 3 campaigns, 240 independent process invocations, 1200 total
+Expected: 3 campaigns, 240 independent process invocations, 900 total
 unprofiled warmup batches, 1920 measured physical runs. Each worker
 count is a separate campaign, so worker-count acquisition time is not
 randomized across campaigns. The same cached input is used in all runs.
