@@ -270,6 +270,29 @@ def render(points, comparisons, output):
             add_legend(fig, ax)
             finish(fig, base + "-cpu")
 
+            # Figure A2: same measured CPU-time cost, but at matching absolute
+            # scheduled arrival rates (WU/s), not per-scheduler normalized X.
+            # Preserves the experimental comparison without rescaling X.
+            fig, ax = plt.subplots(figsize=(11.5, 6.6))
+            fig.subplots_adjust(left=.10, right=.97, bottom=.23, top=.83)
+            for i, scheduler in enumerate(CONFIGS):
+                rows = matching(workers, mode, scheduler, "task_clock_per_wu")
+                x = np.array([row["scheduled_arrival_rate"] for row in rows])
+                y = np.array([row["absolute_value"] for row in rows])
+                low = np.array([row["absolute_ci95_low"] for row in rows])
+                high = np.array([row["absolute_ci95_high"] for row in rows])
+                ax.errorbar(x, y, yerr=[y - low, high - y],
+                            fmt="o", markersize=5.0, linestyle="none",
+                            elinewidth=1.1, capsize=3, capthick=1.1,
+                            label=LABELS[i], color=COLORS[i])
+            ax.set(xlabel="Scheduled arrival rate (work units/s) — same for every scheduler",
+                   ylabel="CPU time per completed task (perf task-clock / WU)",
+                   title="CPU cost at matched absolute arrival rates — lower is better")
+            ax.grid(alpha=.23)
+            fig.suptitle(f"{workers} workers  |  {mode_title}", y=.98)
+            add_legend(fig, ax)
+            finish(fig, base + "-cpu-absolute")
+
             # Figure B: a simple throughput-vs-demand curve, including uncertainty
             # in both the measured numerator and the independent capacity baseline.
             fig, ax = plt.subplots(figsize=(11.5, 6.6))
@@ -373,13 +396,16 @@ def main():
     ), indent=2) + "\n")
     report = ["# Scheduler-relative BLS offered-load curves", "",
               "Eight figures use 48 archived paced campaigns and four new batch-capacity campaigns.",
-              "The horizontal axis is offered rate divided by scheduler-specific batch throughput.",
-              "The main vertical axis is achieved batch throughput divided by the same denominator.",
+              "On normalized CPU plots, X is scheduled arrivals / each scheduler's batch capacity.",
+              "On absolute CPU plots, X is the same scheduled arrivals in work units/s for all schedulers.",
+              "Both CPU plots show the same task-clock per work unit values and pointwise 95% CIs.",
+              "The throughput panel plots achieved batch throughput relative to each scheduler's capacity.",
               "Vertical capped error bars represent pointwise block-bootstrap 95% CIs.",
-              "The final panel uses absolute arrivals (WU/s) for like-for-like comparisons.", ""]
+              "All measurements are unconnected points: no interpolation or polynomial is claimed.", ""]
     report += ["## Interpretation constraints", ""] + ["- " + c for c in caveats]
     report += ["", "## Charts", "",
-               "For each worker/mode combination: CPU cost, relative throughput, and",
+               "For each worker/mode combination: CPU cost versus normalized load,",
+               "CPU cost versus absolute arrival rate, relative throughput, and",
                "paired comparison against Rayon at a **matched absolute arrival rate**.",
                "The self-normalized curves use a different capacity denominator for",
                "each scheduler. The paired chart uses the same Rayon-normalized",
@@ -389,11 +415,11 @@ def main():
     for w in WORKERS:
         for mode in MODES:
             report += [f"### {w} workers, {mode}", ""]
-            for kind in ("cpu", "throughput", "vs-rayon"):
+            for kind in ("cpu", "cpu-absolute", "throughput", "vs-rayon"):
                 name = f"w{w}-{mode}-{kind}.png"
                 report += [f"![{name}]({name})", ""]
     (args.output / "report.md").write_text("\n".join(report))
-    print(f"Created 24 focused PNG/SVG charts, {len(points)} normalized metric points, "
+    print(f"Created 32 focused PNG/SVG charts, {len(points)} normalized metric points, "
           f"and {len(comparisons)} paired differences at {args.output}")
 
 
