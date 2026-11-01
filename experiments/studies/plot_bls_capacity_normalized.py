@@ -257,9 +257,10 @@ def render(points, comparisons, output):
                 y = np.array([row["value"] for row in rows])
                 low = np.array([row["ci95_low"] for row in rows])
                 high = np.array([row["ci95_high"] for row in rows])
-                ax.plot(x, y, "-o", lw=2, markersize=5.5,
-                        label=LABELS[i], color=COLORS[i])
-                ax.fill_between(x, low, high, alpha=.13, color=COLORS[i])
+                ax.errorbar(x, y, yerr=[y - low, high - y],
+                            fmt="-o", lw=1.6, markersize=4.5,
+                            elinewidth=1.1, capsize=3, capthick=1.1,
+                            label=LABELS[i], color=COLORS[i])
             ax.axvline(100, ls="--", color="gray", lw=1)
             ax.set(xlabel="Offered load relative to each scheduler's measured batch capacity (%)",
                    ylabel="CPU time per task (perf task-clock / WU)",
@@ -281,9 +282,10 @@ def render(points, comparisons, output):
                 y = np.array([row["value"] * 100 for row in rows])
                 low = np.array([row["ci95_low"] * 100 for row in rows])
                 high = np.array([row["ci95_high"] * 100 for row in rows])
-                ax.plot(x, y, "-o", lw=2, markersize=5.5,
-                        label=LABELS[i], color=COLORS[i])
-                ax.fill_between(x, low, high, alpha=.13, color=COLORS[i])
+                ax.errorbar(x, y, yerr=[y - low, high - y],
+                            fmt="-o", lw=1.6, markersize=4.5,
+                            elinewidth=1.1, capsize=3, capthick=1.1,
+                            label=LABELS[i], color=COLORS[i])
             ax.axvline(100, ls=":", color="gray", lw=1)
             ax.set(xlabel="Offered load relative to each scheduler's measured batch capacity (%)",
                    ylabel="Achieved throughput / batch capacity (%)",
@@ -314,9 +316,10 @@ def render(points, comparisons, output):
                     ys = np.array([r["change_percent"] for r in rows])
                     lo = np.array([r["ci95_low"] for r in rows])
                     hi = np.array([r["ci95_high"] for r in rows])
-                    ax.plot(xs, ys, "-o", lw=2, markersize=5,
-                            label=LABELS[i], color=COLORS[i])
-                    ax.fill_between(xs, lo, hi, alpha=.13, color=COLORS[i])
+                    ax.errorbar(xs, ys, yerr=[ys - lo, hi - ys],
+                                fmt="-o", lw=1.6, markersize=4.5,
+                                elinewidth=1.1, capsize=3, capthick=1.1,
+                                label=LABELS[i], color=COLORS[i])
                 ax.axhline(0, ls="--", lw=1, color="gray")
                 ax.grid(alpha=.23)
             ax_cpu.set(title="CPU time relative to Rayon — negative = less CPU time",
@@ -374,7 +377,7 @@ def main():
               "Eight figures use 48 archived paced campaigns and four new batch-capacity campaigns.",
               "The horizontal axis is offered rate divided by scheduler-specific batch throughput.",
               "The main vertical axis is achieved batch throughput divided by the same denominator.",
-              "Shading represents block-bootstrap 95% CIs, including denominator uncertainty.",
+              "Vertical capped error bars represent pointwise block-bootstrap 95% CIs.",
               "The final panel uses absolute arrivals (WU/s) for like-for-like comparisons.", ""]
     report += ["## Interpretation constraints", ""] + ["- " + c for c in caveats]
     report += ["", "## Charts", "",
