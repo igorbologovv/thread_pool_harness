@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from experiments.studies.plot_bls_capacity_normalized import (
-    CONFIGS, WORKERS, build, capacity_data, paced_data,
+    CONFIGS, WORKERS, build, capacity_data, paced_data, compare_to_rayon,
 )
 
 
@@ -35,6 +35,16 @@ class CapacityNormalizedTests(unittest.TestCase):
                         for cfg in CONFIGS
                     }
         cap_rows, points = build(capacities, paced, 1000)
+        paired = compare_to_rayon(paced, capacities, 1000)
+        self.assertEqual(len(paired), 4 * 2 * 6 * 4 * 2)
+        comp = next(r for r in paired if r["workers"] == 8
+                    and r["mode"] == "fixed-arrivals"
+                    and r["scheduler"] == "mpmc-sp0"
+                    and r["scheduled_arrival_rate"] == 50.0
+                    and r["metric"] == "throughput")
+        self.assertAlmostEqual(comp["common_load_percent"], 100 * 50 / 108)
+        self.assertAlmostEqual(comp["change_percent"], 0.0)
+        self.assertAlmostEqual(comp["ci95_low"], 0.0)
         self.assertEqual(len(cap_rows), len(WORKERS) * len(CONFIGS))
         self.assertEqual(len(points), 4 * 2 * 6 * 5 * 5)
         reference = next(p for p in points
