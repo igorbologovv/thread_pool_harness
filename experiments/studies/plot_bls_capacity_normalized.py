@@ -211,7 +211,7 @@ def compare_to_rayon(paced, capacity, repetitions):
 
 
 def render(points, comparisons, output):
-    """Focused, readable charts, one question per figure."""
+    """Unconnected measured points with 95% CI whiskers (no interpolating lines)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -258,7 +258,7 @@ def render(points, comparisons, output):
                 low = np.array([row["ci95_low"] for row in rows])
                 high = np.array([row["ci95_high"] for row in rows])
                 ax.errorbar(x, y, yerr=[y - low, high - y],
-                            fmt="-o", lw=1.6, markersize=4.5,
+                            fmt="o", markersize=5.0, linestyle="none",
                             elinewidth=1.1, capsize=3, capthick=1.1,
                             label=LABELS[i], color=COLORS[i])
             ax.axvline(100, ls="--", color="gray", lw=1)
@@ -274,8 +274,6 @@ def render(points, comparisons, output):
             # in both the measured numerator and the independent capacity baseline.
             fig, ax = plt.subplots(figsize=(11.5, 6.6))
             fig.subplots_adjust(left=.10, right=.97, bottom=.23, top=.83)
-            ax.plot([0, 100, 220], [0, 100, 100],
-                    "--", lw=1.3, color="gray", label="Idealized limit (guide)")
             for i, scheduler in enumerate(CONFIGS):
                 rows = matching(workers, mode, scheduler, "achieved_over_capacity")
                 x = np.array([row["relative_load"] * 100 for row in rows])
@@ -283,7 +281,7 @@ def render(points, comparisons, output):
                 low = np.array([row["ci95_low"] * 100 for row in rows])
                 high = np.array([row["ci95_high"] * 100 for row in rows])
                 ax.errorbar(x, y, yerr=[y - low, high - y],
-                            fmt="-o", lw=1.6, markersize=4.5,
+                            fmt="o", markersize=5.0, linestyle="none",
                             elinewidth=1.1, capsize=3, capthick=1.1,
                             label=LABELS[i], color=COLORS[i])
             ax.axvline(100, ls=":", color="gray", lw=1)
@@ -317,7 +315,7 @@ def render(points, comparisons, output):
                     lo = np.array([r["ci95_low"] for r in rows])
                     hi = np.array([r["ci95_high"] for r in rows])
                     ax.errorbar(xs, ys, yerr=[ys - lo, hi - ys],
-                                fmt="-o", lw=1.6, markersize=4.5,
+                                fmt="o", markersize=5.0, linestyle="none",
                                 elinewidth=1.1, capsize=3, capthick=1.1,
                                 label=LABELS[i], color=COLORS[i])
                 ax.axhline(0, ls="--", lw=1, color="gray")
