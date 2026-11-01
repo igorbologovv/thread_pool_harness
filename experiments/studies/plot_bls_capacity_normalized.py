@@ -178,66 +178,156 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
-def render(points, output):
+def compare_to_rayon(paced, capacity, repetitions):
+    """Paired original-load comparisons, with Rayon batch capacity as common X."""
+    import numpy as np
+    rng = np.random.default_rng(20261102)
+    rows = []
+    for (workers, mode, arrival_rate), table in sorted(paced.items()):
+        rayon_capacity = statistics.mean(capacity[workers, "rayon"])
+        for scheduler in CONFIGS:
+            if scheduler == "rayon":
+                continue
+            for metric in ("throughput", "task_clock_per_wu"):
+                paired = []
+                for block in range(1, 21):
+                    ref = float(table["rayon"][block][metric])
+                    actual = float(table[scheduler][block][metric])
+                    assert_valid(math.isfinite(actual) and math.isfinite(ref) and ref > 0,
+                                 f"Invalid paired comparison: {scheduler}/{metric}")
+                    paired.append(100 * (actual / ref - 1))
+                bs = bootstrap_mean(paired, rng, repetitions)
+                rows.append(dict(
+                    workers=workers, mode=mode, scheduler=scheduler,
+                    metric=metric,
+                    scheduled_arrival_rate=arrival_rate,
+                    common_load_percent=100 * arrival_rate / rayon_capacity,
+                    change_percent=statistics.mean(paired),
+                    ci95_low=float(np.quantile(bs, .025)),
+                    ci95_high=float(np.quantile(bs, .975)),
+                    independent_paired_blocks=20,
+                ))
+    return rows
+
+
+def render(points, comparisons, output):
+    """Focused, readable charts, one question per figure."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
 
-    charts = (
-        ("achieved_over_capacity", "Achieved throughput / batch capacity"),
-        ("task_clock_per_wu", "Task-clock per WU (perf units)"),
-        ("cycles_per_wu", "CPU cycles per WU"),
-        ("drain_delay_ms", "Elapsed since last submission started (ms)"),
-        ("branch_misses_per_wu", "Branch misses per WU"),
-        ("absolute", "Achieved throughput (WU/s), absolute scheduled rate"),
-    )
-    for w in WORKERS:
+    style = {"font.size": 11, "axes.titlesize": 15, "axes.labelsize": 11,
+             "legend.fontsize": 10, "figure.titlesize": 15}
+    plt.rcParams.update(style)
+
+    def matching(workers, mode, scheduler, metric):
+        selected = sorted(
+            (row for row in points if row["workers"] == workers
+             and row["mode"] == mode and row["scheduler"] == scheduler
+             and row["metric"] == metric),
+            key=lambda row: row["scheduled_arrival_rate"],
+        )
+        assert_valid(len(selected) == 6, f"Missing data: {workers}/{mode}/{scheduler}/{metric}")
+        return selected
+
+    def finish(fig, filename):
+        for extension in ("png", "svg"):
+            fig.savefig(output / f"{filename}.{extension}",
+                        dpi=170, bbox_inches="tight")
+        plt.close(fig)
+
+    def add_legend(fig, ax, ncol=3):
+        handles, labels = ax.get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center",
+                   bbox_to_anchor=(.5, .025), ncol=ncol,
+                   frameon=False, columnspacing=1.8)
+
+    for workers in WORKERS:
         for mode in MODES:
-            fig, axes = plt.subplots(2, 3, figsize=(19, 11), constrained_layout=True)
-            for ax, (metric, title) in zip(axes.flat, charts):
+            mode_title = "Periodic arrivals" if mode == "fixed-arrivals" else "Bursty arrivals"
+            base = f"w{workers}-{mode}"
+
+            # Figure A: direct CPU-cost view in the original perf task-clock units.
+            fig, ax = plt.subplots(figsize=(11.5, 6.6))
+            fig.subplots_adjust(left=.10, right=.97, bottom=.23, top=.83)
+            for i, scheduler in enumerate(CONFIGS):
+                rows = matching(workers, mode, scheduler, "task_clock_per_wu")
+                x = np.array([row["relative_load"] * 100 for row in rows])
+                y = np.array([row["value"] for row in rows])
+                low = np.array([row["ci95_low"] for row in rows])
+                high = np.array([row["ci95_high"] for row in rows])
+                ax.plot(x, y, "-o", lw=2, markersize=5.5,
+                        label=LABELS[i], color=COLORS[i])
+                ax.fill_between(x, low, high, alpha=.13, color=COLORS[i])
+            ax.axvline(100, ls="--", color="gray", lw=1)
+            ax.set(xlabel="Offered load relative to each scheduler's measured batch capacity (%)",
+                   ylabel="CPU time per task (perf task-clock / WU)",
+                   title="CPU cost by normalized offered load — lower is better")
+            ax.grid(alpha=.23)
+            fig.suptitle(f"{workers} workers  |  {mode_title}", y=.98)
+            add_legend(fig, ax)
+            finish(fig, base + "-cpu")
+
+            # Figure B: a simple throughput-vs-demand curve, including uncertainty
+            # in both the measured numerator and the independent capacity baseline.
+            fig, ax = plt.subplots(figsize=(11.5, 6.6))
+            fig.subplots_adjust(left=.10, right=.97, bottom=.23, top=.83)
+            ax.plot([0, 100, 220], [0, 100, 100],
+                    "--", lw=1.3, color="gray", label="Idealized limit (guide)")
+            for i, scheduler in enumerate(CONFIGS):
+                rows = matching(workers, mode, scheduler, "achieved_over_capacity")
+                x = np.array([row["relative_load"] * 100 for row in rows])
+                y = np.array([row["value"] * 100 for row in rows])
+                low = np.array([row["ci95_low"] * 100 for row in rows])
+                high = np.array([row["ci95_high"] * 100 for row in rows])
+                ax.plot(x, y, "-o", lw=2, markersize=5.5,
+                        label=LABELS[i], color=COLORS[i])
+                ax.fill_between(x, low, high, alpha=.13, color=COLORS[i])
+            ax.axvline(100, ls=":", color="gray", lw=1)
+            ax.set(xlabel="Offered load relative to each scheduler's measured batch capacity (%)",
+                   ylabel="Achieved throughput / batch capacity (%)",
+                   title="How much of the batch capacity is achieved?")
+            ax.grid(alpha=.23)
+            fig.suptitle(f"{workers} workers  |  {mode_title}", y=.98)
+            add_legend(fig, ax, ncol=3)
+            finish(fig, base + "-throughput")
+
+            # Figure C: properly paired direct comparisons. Unlike own-capacity X,
+            # the common Rayon-normalized X maps to the SAME physical arrival rate.
+            fig, (ax_cpu, ax_tp) = plt.subplots(2, 1, figsize=(11.5, 9.0),
+                                                 sharex=True)
+            fig.subplots_adjust(left=.11, right=.97, bottom=.19, top=.88, hspace=.24)
+            for ax, metric in ((ax_cpu, "task_clock_per_wu"),
+                               (ax_tp, "throughput")):
                 for i, scheduler in enumerate(CONFIGS):
-                    selected_metric = "achieved_over_capacity" if metric == "absolute" else metric
-                    selected = sorted(
-                        (row for row in points
-                         if row["workers"] == w and row["mode"] == mode
-                         and row["scheduler"] == scheduler
-                         and row["metric"] == selected_metric),
+                    if scheduler == "rayon":
+                        continue
+                    rows = sorted(
+                        (r for r in comparisons if r["workers"] == workers
+                         and r["mode"] == mode and r["scheduler"] == scheduler
+                         and r["metric"] == metric),
                         key=lambda row: row["scheduled_arrival_rate"],
                     )
-                    assert_valid(len(selected) == 6, "Incomplete data for graph")
-                    if metric == "absolute":
-                        x = np.asarray([row["scheduled_arrival_rate"] for row in selected])
-                        y = np.asarray([row["absolute_value"] for row in selected])
-                        lo = np.asarray([row["absolute_ci95_low"] for row in selected])
-                        hi = np.asarray([row["absolute_ci95_high"] for row in selected])
-                    else:
-                        x = np.asarray([row["relative_load"] for row in selected])
-                        y = np.asarray([row["value"] for row in selected])
-                        lo = np.asarray([row["ci95_low"] for row in selected])
-                        hi = np.asarray([row["ci95_high"] for row in selected])
-                    ax.plot(x, y, "-o", color=COLORS[i], markersize=3.4,
-                            linewidth=1.4, label=LABELS[i])
-                    ax.fill_between(x, lo, hi, color=COLORS[i], alpha=0.12)
-                ax.set_title(title, fontsize=11)
-                ax.set_xlabel("Scheduled arrivals (WU/s)" if metric == "absolute"
-                              else "Scheduled arrival rate / scheduler batch capacity")
+                    assert_valid(len(rows) == 6, "Incomplete paired comparison")
+                    xs = np.array([r["common_load_percent"] for r in rows])
+                    ys = np.array([r["change_percent"] for r in rows])
+                    lo = np.array([r["ci95_low"] for r in rows])
+                    hi = np.array([r["ci95_high"] for r in rows])
+                    ax.plot(xs, ys, "-o", lw=2, markersize=5,
+                            label=LABELS[i], color=COLORS[i])
+                    ax.fill_between(xs, lo, hi, alpha=.13, color=COLORS[i])
+                ax.axhline(0, ls="--", lw=1, color="gray")
                 ax.grid(alpha=.23)
-                if metric != "absolute":
-                    ax.axvline(1, color="gray", linewidth=1, linestyle="--")
-                if metric == "achieved_over_capacity":
-                    ax.axhline(1, color="gray", linewidth=1, linestyle=":")
-                ax.ticklabel_format(axis="y", style="plain", useOffset=False)
-            handles, labels = axes.flat[0].get_legend_handles_labels()
-            fig.legend(handles, labels, loc="outside upper center", ncol=5)
-            fig.suptitle(f"BLS normalized load: {w} workers, {mode}\n"
-                         "Archived paced results / new scheduler-specific finite-batch capacity",
-                         fontsize=14, y=1.04)
-            basename = f"w{w}-{mode}"
-            for suffix in ("png", "svg"):
-                fig.savefig(output / f"{basename}.{suffix}",
-                            dpi=180, bbox_inches="tight")
-            plt.close(fig)
+            ax_cpu.set(title="CPU time relative to Rayon — negative = less CPU time",
+                       ylabel="Difference vs Rayon (%)")
+            ax_tp.set(title="Achieved throughput relative to Rayon — positive = faster",
+                      ylabel="Difference vs Rayon (%)",
+                      xlabel="Offered load / Rayon batch capacity (%) — same arrival rate for all")
+            fig.suptitle(f"{workers} workers  |  {mode_title}  |  Paired comparison at matched arrival rates",
+                         y=.97)
+            add_legend(fig, ax_cpu, ncol=4)
+            finish(fig, base + "-vs-rayon")
 
 
 def main():
@@ -247,7 +337,7 @@ def main():
     parser.add_argument("--capacity-root", type=Path,
                         default=ROOT / "results/studies/bls-saturation-recheck/campaigns")
     parser.add_argument("--output", type=Path,
-                        default=ROOT / "results/studies/bls-capacity-normalized")
+                        default=ROOT / "results/studies/bls-capacity-normalized/clear-plots")
     parser.add_argument("--bootstrap", type=int, default=4000)
     args = parser.parse_args()
     assert_valid(args.bootstrap >= 1000, "bootstrap must be >=1000")
@@ -257,7 +347,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     write_csv(args.output / "capacity_estimates.csv", cap_rows)
     write_csv(args.output / "normalized_curves.csv", points)
-    render(points, args.output)
+    comparisons = compare_to_rayon(paced, capacities, args.bootstrap)
+    write_csv(args.output / "paired_vs_rayon.csv", comparisons)
+    render(points, comparisons, args.output)
     caveats = [
         "These graphs reuse historical paced data; no new paced measurements were performed.",
         "Paced load levels were originally based on preliminary Rayon-only batch throughput.",
@@ -285,13 +377,23 @@ def main():
               "Shading represents block-bootstrap 95% CIs, including denominator uncertainty.",
               "The final panel uses absolute arrivals (WU/s) for like-for-like comparisons.", ""]
     report += ["## Interpretation constraints", ""] + ["- " + c for c in caveats]
-    report += ["", "## Charts", ""]
+    report += ["", "## Charts", "",
+               "For each worker/mode combination: CPU cost, relative throughput, and",
+               "paired comparison against Rayon at a **matched absolute arrival rate**.",
+               "The self-normalized curves use a different capacity denominator for",
+               "each scheduler. The paired chart uses the same Rayon-normalized",
+               "horizontal axis for all schedulers to preserve fair comparisons.",
+               "The former six-panel overview has been replaced; old images remain",
+               "in the previous output directory.", ""]
     for w in WORKERS:
         for mode in MODES:
-            name = f"w{w}-{mode}.png"
-            report += [f"### {w} workers, {mode}", "", f"![{name}]({name})", ""]
+            report += [f"### {w} workers, {mode}", ""]
+            for kind in ("cpu", "throughput", "vs-rayon"):
+                name = f"w{w}-{mode}-{kind}.png"
+                report += [f"![{name}]({name})", ""]
     (args.output / "report.md").write_text("\n".join(report))
-    print(f"Created 8 PNG/SVG figures and {len(points)} normalized metric points at {args.output}")
+    print(f"Created 24 focused PNG/SVG charts, {len(points)} normalized metric points, "
+          f"and {len(comparisons)} paired differences at {args.output}")
 
 
 if __name__ == "__main__":
