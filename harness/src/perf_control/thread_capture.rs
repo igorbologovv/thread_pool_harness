@@ -64,6 +64,15 @@ fn is_inactive_tid(records: &[Value], indices: &[usize]) -> PerfResult<bool> {
     for &index in indices {
         let metric = parse_metric(&records[index])
             .ok_or("malformed event record while checking inactive thread")?;
+        // An exact zero CPU-time observation cannot coexist with a positive
+        // scheduled hardware/software counter in the same measured interval.
+        // Treat such a mismatch as a failed measurement, not as a live worker.
+        if metric.counter_value.is_some_and(|value| value > 0.0) {
+            return Err(format!(
+                "inconsistent per-thread counters: zero task-clock with positive {}={:?}; raw={}",
+                metric.event_name, metric.counter_value, records[index]
+            ).into());
+        }
         let zero_observation = metric.counter_value == Some(0.0)
             && metric.status == "ok";
         let no_runtime_observation = metric.status == "not-counted"
