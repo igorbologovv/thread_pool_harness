@@ -45,6 +45,37 @@ fn tid_from_label(label: &str) -> PerfResult<u64> {
     Ok(suffix.parse()?)
 }
 
+/// A TID is marked inactive only if its task-clock says zero/no runtime AND
+/// every event confirms either measured zero or <not counted> with zero runtime.
+/// A missing PMU value on an active thread remains an error, never zero-filled.
+fn is_inactive_tid(records: &[Value], indices: &[usize]) -> PerfResult<bool> {
+    let clock = indices.iter()
+        .map(|&index| &records[index])
+        .find(|record| record["event"].as_str()
+            .is_some_and(|name| name.split(':').next() == Some("task-clock")))
+        .ok_or("missing task-clock record for per-thread measurement")?;
+    let clock_metric = parse_metric(clock).ok_or("malformed task-clock record")?;
+    let zero_cpu_time = clock_metric.counter_value == Some(0.0)
+        || (clock_metric.status == "not-counted"
+            && clock_metric.event_runtime_ns == Some(0));
+    if !zero_cpu_time {
+        return Ok(false);
+    }
+    for &index in indices {
+        let metric = parse_metric(&records[index])
+            .ok_or("malformed event record while checking inactive thread")?;
+        let zero_observation = metric.counter_value == Some(0.0)
+            && metric.status == "ok";
+        let no_runtime_observation = metric.status == "not-counted"
+            && metric.counter_value.is_none()
+            && metric.event_runtime_ns == Some(0);
+        if !zero_observation && !no_runtime_observation {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn validate_and_aggregate(
     raw: String,
     _parsed_metrics: Vec<PerfMetric>,
@@ -55,10 +86,10 @@ pub(super) fn validate_and_aggregate(
     if !doc["unparsed"].as_array().is_some_and(|v| v.is_empty()) {
         return Err("unparseable per-thread perf output".into());
     }
-    let records = doc.get_mut("records").and_then(Value::as_array_mut)
+    let records = doc.get("records").and_then(Value::as_array)
         .ok_or("missing perf records array")?;
     if records.is_empty() {
-        return Err("empty or unparseable per-thread perf output".into());
+        return Err("empty per-thread perf output".into());
     }
 
     let expected_tids: BTreeSet<u64> = threads.iter()
@@ -73,67 +104,112 @@ pub(super) fn validate_and_aggregate(
          t["role"].as_str().expect("snapshot validated role").to_owned())
     }).collect();
 
+    // First prove that all events were returned for all three known TIDs.
+    // This must happen before any inactive-thread normalization.
     let mut seen: BTreeSet<(u64, String)> = BTreeSet::new();
-    let mut totals: BTreeMap<String, PerfMetric> = BTreeMap::new();
-    for record in records.iter_mut() {
+    let mut indices_by_tid: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (index, record) in records.iter().enumerate() {
         let label = record["thread"].as_str()
-            .ok_or("missing thread identifier in perf JSON")?;
+            .ok_or("missing TID label in per-thread perf JSON")?;
         let tid = tid_from_label(label)?;
         if !expected_tids.contains(&tid) {
-            return Err(format!("unexpected perf TID {tid}: {label}").into());
+            return Err(format!("unexpected TID {tid} in perf record {record}").into());
         }
-        let metric = parse_metric(record)
-            .ok_or("missing perf event in per-thread record")?;
+        let metric = parse_metric(record).ok_or("malformed perf event record")?;
         let base = metric.event_name.split(':').next()
             .ok_or("missing base event name")?.to_owned();
         if !expected_event_names.contains(&base) {
-            return Err(format!("unexpected perf event {}", metric.event_name).into());
+            return Err(format!("unexpected event {}", metric.event_name).into());
         }
         if !seen.insert((tid, base)) {
-            return Err(format!("duplicate perf record: TID {tid}, event {}", metric.event_name).into());
+            return Err(format!("duplicate perf record for TID {tid}: {}", metric.event_name).into());
         }
-        // A parked worker may have no scheduled CPU time. perf can then
-        // report <not counted> rather than a numeric zero for a PMU event.
-        // Do not impute zero: show the exact affected TID/event/record.
-        let value = metric.counter_value.ok_or_else(|| {
-            format!(
-                "missing per-thread counter: tid={tid} role={} event={} status={} 
-                 percent_running={:?} raw_record={}",
-                roles[&tid], metric.event_name, metric.status, metric.percent_running, record
-            )
-        })?;
-        if metric.status != "ok" || !value.is_finite() || value < 0.0 ||
-           metric.percent_running.is_some_and(|pct| !(99.5..=100.01).contains(&pct)) {
-            return Err(format!(
-                "invalid per-thread event: tid={tid}, role={}, event={}, \
-                 status={}, value={value}, running={:?}, raw_record={record}",
-                roles[&tid], metric.event_name, metric.status, metric.percent_running
-            ).into());
-        }
-        record["tid"] = json!(tid);
-        record["role"] = json!(roles[&tid]);
-
-        if let Some(total) = totals.get_mut(&metric.event_name) {
-            total.counter_value = Some(total.counter_value.unwrap() + value);
-            total.percent_running = match (total.percent_running, metric.percent_running) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                _ => None,
-            };
-        } else {
-            totals.insert(metric.event_name.clone(), PerfMetric {
-                event_runtime_ns: None, metric_value: None, metric_unit: None, ..metric
-            });
-        }
+        indices_by_tid.entry(tid).or_default().push(index);
     }
     let expected: BTreeSet<(u64, String)> = expected_tids.iter()
         .flat_map(|tid| expected_event_names.iter()
             .map(move |name| (*tid, name.clone()))).collect();
     if seen != expected {
-        return Err(format!(
-            "missing per-thread counters: {:?}",
-            expected.difference(&seen).collect::<Vec<_>>()
-        ).into());
+        return Err(format!("missing per-thread records: {:?}",
+            expected.difference(&seen).collect::<Vec<_>>()).into());
+    }
+
+    let mut inactive_tids = BTreeSet::new();
+    for (&tid, indices) in &indices_by_tid {
+        if is_inactive_tid(records, indices)? {
+            if roles[&tid] == "pacer" {
+                return Err("pacer had no counted CPU time: invalid measured run".into());
+            }
+            inactive_tids.insert(tid);
+        }
+    }
+
+    let records = doc.get_mut("records").and_then(Value::as_array_mut)
+        .expect("records validated above");
+    let mut totals: BTreeMap<String, PerfMetric> = BTreeMap::new();
+    for record in records {
+        let label = record["thread"].as_str().expect("label checked above");
+        let tid = tid_from_label(label)?;
+        let metric = parse_metric(record).expect("record checked above");
+        let inactive = inactive_tids.contains(&tid);
+        let value = if inactive {
+            // Strictly derived accounting contribution, not a measured PMU
+            // value. The original counter-value remains unchanged in raw JSON.
+            0.0
+        } else {
+            let value = metric.counter_value.ok_or_else(|| {
+                format!(
+                    "missing ACTIVE-thread counter: tid={tid} role={} event={} \
+                     status={} event_runtime_ns={:?} raw_record={record}",
+                    roles[&tid], metric.event_name, metric.status,
+                    metric.event_runtime_ns,
+                )
+            })?;
+            if metric.status != "ok" || !value.is_finite() || value < 0.0 ||
+               metric.percent_running.is_some_and(|pct| !(99.5..=100.01).contains(&pct)) {
+                return Err(format!(
+                    "invalid ACTIVE-thread event: tid={tid} role={} \
+                     event={} status={} raw_record={record}",
+                    roles[&tid], metric.event_name, metric.status,
+                ).into());
+            }
+            value
+        };
+        record["tid"] = json!(tid);
+        record["role"] = json!(roles[&tid]);
+        record["measurement_state"] = json!(
+            if inactive { "inactive-no-scheduled-runtime" } else { "counted" }
+        );
+        // For inactive TIDs, this is a conditional accounting value.
+        // Keep raw 'counter-value' and event-runtime for audit/reinspection.
+        record["accounting_value"] = json!(value);
+
+        let event_name = metric.event_name.clone();
+        if let Some(total) = totals.get_mut(&event_name) {
+            total.counter_value = Some(total.counter_value.unwrap() + value);
+            if !inactive {
+                total.percent_running = match (total.percent_running, metric.percent_running) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (None, b) | (b, None) => b,
+                };
+            }
+        } else {
+            totals.insert(event_name, PerfMetric {
+                counter_value: Some(value),
+                status: "ok".to_owned(),
+                // Derived perf metrics and runtime cannot be summed across TIDs.
+                event_runtime_ns: None,
+                metric_value: None,
+                metric_unit: None,
+                percent_running: if inactive { None } else { metric.percent_running },
+                ..metric
+            });
+        }
+    }
+    if inactive_tids.len() == 2 {
+        return Err("both workers inactive in a completed BLS run".into());
     }
     doc["thread_map"] = Value::Array(threads.to_vec());
+    doc["inactive_tids"] = json!(inactive_tids);
     Ok((serde_json::to_string(&doc)?, totals.into_values().collect()))
 }
