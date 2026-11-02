@@ -39,7 +39,14 @@ python3 -m unittest tests.test_bls_thread_perf_diagnostic
 python3 -m experiments.studies.run_bls_thread_perf_diagnostic --check
 ```
 
-**Run a one-block smoke first, not the full campaign.** The production runner
+**Run a one-block smoke first, not the full campaign:**
+
+```bash
+sudo sysctl -w kernel.perf_event_paranoid=1
+python3 -m experiments.studies.run_bls_thread_perf_diagnostic --smoke
+```
+
+The production runner
 is strict: unsupported per-TID perf JSON or missing events aborts. Inspect
 `perf_capture.raw_json` for `thread_map` and the three distinct TIDs with
 complete events before attempting 20 blocks.
