@@ -286,6 +286,11 @@ mod tests {
             .find(|record| record["thread"] == "threadance-102"
                 && record["event"] == "task-clock").unwrap();
         clock["counter-value"] = json!("0");
+        let cycles = doc["records"].as_array_mut().unwrap().iter_mut()
+            .find(|record| record["thread"] == "threadance-102"
+                && record["event"] == "cycles:uk").unwrap();
+        cycles["counter-value"] = json!("5");
+        cycles["event-runtime"] = json!(400000);
         let result = validate_and_aggregate(doc.to_string(), vec![], &threads, &events);
         assert!(result.is_err());
     }
