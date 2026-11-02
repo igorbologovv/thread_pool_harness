@@ -22,7 +22,7 @@ class BoostControlPlanTests(unittest.TestCase):
             self.assertEqual(data["delivery"]["mode"], "fixed-arrivals")
             self.assertAlmostEqual(data["delivery"]["arrival_rates"][0], 647.0)
             total += run_phase(phase, check=True)["physical_runs"]
-        self.assertEqual(total, 160)
+        self.assertEqual(total, 320)
 
     def test_one_block_smoke_is_separate(self):
         data, _, _, _, n = definition(1, smoke=True)
