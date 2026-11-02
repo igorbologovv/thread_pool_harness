@@ -121,7 +121,7 @@ def execute(check=False, smoke=False):
             env["THREADANCE_PER_THREAD_PERF"] = "1"
             subprocess.run(command("resume" if prior else "collect", definition, prior),
                            cwd=ROOT, env=env, check=True)
-            prior = existing_campaign(data["experiment"]["name"], definition, OUTPUT)
+            prior = existing_campaign(data["experiment"]["name"], definition, destination)
         if prior is None or not completed(prior, summary["invocations"]):
             raise RuntimeError("Incomplete thread diagnostic")
         verify_campaign_database(prior, data, summary["invocations"])
