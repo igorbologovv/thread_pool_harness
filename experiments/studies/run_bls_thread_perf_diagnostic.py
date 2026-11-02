@@ -1,134 +1,132 @@
-"""Exploratory per-thread perf experiment. No harness source modifications.
+"""Strict per-run, per-thread BLS diagnostic using an opt-in harness PMU mode.
 
-Attach perf to already-running main/pacer and 2 worker TIDs. Since attachment is
-not synchronized with individual runs, this diagnoses a multi-run window rather
-than providing exact per-run counters. Raw measurements are never silently
-treated as conventional process-wide perf results.
+The harness synchronizes perf enable/disable with every measured run and
+attaches to the pre-existing pacer + two worker TIDs. All raw per-thread
+events remain in SQLite perf_capture.raw_json.
 """
 from __future__ import annotations
 import argparse
-import csv
+import copy
+import fcntl
 import json
 import os
-from pathlib import Path
-import random
 import subprocess
-import time
+import sys
+import tomllib
+from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-BINARY = ROOT / "target/release/threadance-harness"
-RESULTS = ROOT / "results/studies/bls-thread-perf-diagnostic"
-CONFIGS = {
-    "mpmc-sp0": ["--scheduler", "threadance", "--threadance-wait-policy", "spin-then-park",
-                 "--threadance-spin-us", "0", "--queue-capacity", "64"],
-    "rtrb-b2": ["--scheduler", "threadance-hot-first-rtrb", "--threadance-wait-policy",
-                 "spin-then-park", "--threadance-spin-us", "0", "--queue-capacity", "64",
-                 "--hot-first-backlog", "2"],
-}
-EVENTS = "task-clock,cycles:uk,instructions:uk,context-switches,cache-misses:uk,branch-misses:uk"
+from experiments.common.campaign import ROOT, make_plan, read_definition, verify_campaign_database
+from experiments.common.study import render_toml
+from experiments.common.study_run import command, completed, existing_campaign
+from experiments.studies.run_bls_transition_w2_sweep import spec as parent_spec
+from experiments.studies.run_bls_normalized_deep_final import (
+    PASS_COUNT, REPETITIONS_PER_PASS, audit_perf_captures,
+)
+
+STUDY = "bls-w2-thread-perf-diagnostic"
+GENERATED = ROOT / "experiments/generated" / STUDY
+OUTPUT = ROOT / "results/studies" / STUDY / "campaigns"
+BLOCKS = 20
+IDS = ("mpmc-sp0", "rtrb-sp0-b2")
+EVENTS = [
+    {"name": "cpu-cache", "events": [
+        "cycles:uk", "instructions:uk", "cache-references:uk",
+        "cache-misses:uk", "L1-dcache-load-misses:uk",
+        "task-clock", "context-switches", "cpu-migrations", "page-faults"]},
+    {"name": "l1-branches", "events": [
+        "cycles:uk", "L1-dcache-loads:uk", "L1-dcache-load-misses:uk",
+        "branches:uk", "branch-misses:uk",
+        "task-clock", "context-switches", "cpu-migrations", "page-faults"]},
+]
 
 
-def threads(pid: int):
-    root = Path(f"/proc/{pid}/task")
-    result = []
-    for p in sorted(root.iterdir(), key=lambda p: int(p.name)):
-        try:
-            result.append({"tid": int(p.name), "comm": (p / "comm").read_text().strip()})
-        except FileNotFoundError:
-            continue
-    return result
-
-
-def command(config: str, runs: int, database: Path):
-    return [
-        str(BINARY), "--workload", "bls-aggregate-verify",
-        "--workers", "2", "--work-units", "256",
-        "--dataset-work-units", "2500", "--validators", "2000",
-        "--signers-per-certificate", "1600", "--seed", "1",
-        "--fixed-arrivals", "--arrival-rate", "647.0",
-        "--warmup", "4", "--runs", str(runs), "--profile", "none",
-        "--database", str(database), *CONFIGS[config],
+def spec():
+    _, definitions = parent_spec()
+    source = next(
+        text for path, text in definitions.items()
+        if "load05000-fixed-arrivals" in path.name
+    )
+    data = tomllib.loads(source)
+    data["experiment"]["name"] = STUDY + "-w2-load05000-fixed-arrivals"
+    data["configurations"] = [
+        config for config in data["configurations"] if config["id"] in IDS
     ]
+    data["repetitions"]["blocks"] = BLOCKS
+    data["perf"]["passes"] = copy.deepcopy(EVENTS)
+    data["randomization"]["seed"] = 20261106
+    data["analysis"]["bootstrap_seed"] = 20261106
+    data["artifacts"]["output_root"] = str(OUTPUT.relative_to(ROOT))
+    if len(data["configurations"]) != 2 or {x["id"] for x in data["configurations"]} != set(IDS):
+        raise ValueError("Expected MPMC spin0 and RTRB backlog2")
+    if data["workload"]["workers"] != 2 or data["workload"]["work_units"] != 256:
+        raise ValueError("Unexpected workload")
+    if data["delivery"]["mode"] != "fixed-arrivals":
+        raise ValueError("Unexpected arrival mode")
+    if len(EVENTS) != PASS_COUNT:
+        raise ValueError("Unexpected perf pass count")
+    rendered = render_toml(data)
+    if tomllib.loads(rendered) != data:
+        raise ValueError("TOML roundtrip failed")
+    invocations = len(make_plan(data, None))
+    if invocations != BLOCKS * 2:
+        raise ValueError(f"Expected 40 invocations, found {invocations}")
+    return {
+        "study": STUDY, "experiment_name": data["experiment"]["name"],
+        "invocations": invocations, "physical_runs": invocations * REPETITIONS_PER_PASS * PASS_COUNT,
+        "definitions": str(GENERATED / (STUDY + ".toml")),
+        "output_root": str(OUTPUT),
+    }, data, rendered
 
 
-def collect(config: str, block: int, runs: int, out: Path):
-    out.mkdir(parents=True, exist_ok=False)
-    with (out / "harness.log").open("w") as log:
-        child = subprocess.Popen(command(config, runs, out / "measure.sqlite3"),
-                                 cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
-        perf = None
-        try:
-            deadline = time.monotonic() + 15
-            snapshot = []
-            while child.poll() is None and time.monotonic() < deadline:
-                snapshot = threads(child.pid)
-                if len(snapshot) == 3 and any(t["tid"] == child.pid for t in snapshot):
-                    break
-                time.sleep(0.005)
-            if len(snapshot) != 3 or not any(t["tid"] == child.pid for t in snapshot):
-                raise RuntimeError(f"Expected pacer + 2 workers; got {snapshot}. Log: {out}")
-            (out / "threads.json").write_text(json.dumps(snapshot, indent=2))
-            perf_cmd = ["perf", "stat", "--per-thread", "-t",
-                        ",".join(str(t["tid"]) for t in snapshot),
-                        "-e", EVENTS, "-x", ",", "-o", str(out / "perf.csv")]
-            (out / "perf_command.json").write_text(json.dumps(perf_cmd, indent=2))
-            perf = subprocess.Popen(perf_cmd, cwd=ROOT, stderr=subprocess.PIPE)
-            # The perf attachment is not gate-synchronized with a warmup or run.
-            child.wait()
-            perf.send_signal(__import__("signal").SIGINT)
-            _, err = perf.communicate(timeout=20)
-            (out / "perf.stderr").write_bytes(err)
-            if child.returncode != 0 or perf.returncode not in (0, 130, -2):
-                raise RuntimeError(
-                    f"Harness exit={child.returncode}, perf exit={perf.returncode}: {out}"
-                )
-        finally:
-            if child.poll() is None:
-                child.terminate()
-                child.wait()
-            if perf is not None and perf.poll() is None:
-                perf.terminate()
-                perf.wait()
-    return {"block": block, "config": config, "pid": child.pid, "threads": snapshot}
+def execute(check=False):
+    summary, data, rendered = spec()
+    if check:
+        return summary
+    if os.geteuid() == 0:
+        raise RuntimeError("Do not run as root")
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                           cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    if dirty:
+        raise RuntimeError("Commit tracked changes before collecting")
+    subprocess.run([sys.executable, "-m", "experiments.studies.check_perf_scope"],
+                   cwd=ROOT, check=True)
+    GENERATED.mkdir(parents=True, exist_ok=True)
+    definition = GENERATED / (STUDY + ".toml")
+    if definition.exists() and definition.read_text() != rendered:
+        raise RuntimeError("Conflicting generated TOML")
+    definition.write_text(rendered)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    with (OUTPUT / ".study-run.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        prior = existing_campaign(data["experiment"]["name"], definition, OUTPUT)
+        if prior is None and any(OUTPUT.glob(data["experiment"]["name"] + "-*")):
+            raise RuntimeError("Conflicting campaign")
+        if prior is None or not completed(prior, summary["invocations"]):
+            subprocess.run(command("prepare", definition), cwd=ROOT, check=True)
+            env = os.environ.copy()
+            env["THREADANCE_PER_THREAD_PERF"] = "1"
+            subprocess.run(command("resume" if prior else "collect", definition, prior),
+                           cwd=ROOT, env=env, check=True)
+            prior = existing_campaign(data["experiment"]["name"], definition, OUTPUT)
+        if prior is None or not completed(prior, summary["invocations"]):
+            raise RuntimeError("Incomplete thread diagnostic")
+        verify_campaign_database(prior, data, summary["invocations"])
+        audit_perf_captures(prior, data, summary["invocations"])
+        subprocess.run([sys.executable, "-m",
+                        "experiments.studies.audit_bls_thread_perf",
+                        str(prior), str(summary["physical_runs"])], cwd=ROOT, check=True)
+        if not (prior / "paired_effects.csv").exists():
+            subprocess.run(command("analyze", definition, prior), cwd=ROOT, check=True)
+    return {**summary, "completed": True, "campaign_dir": str(prior)}
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--check", action="store_true")
-    p.add_argument("--run", action="store_true")
-    p.add_argument("--blocks", type=int, default=12)
-    p.add_argument("--runs", type=int, default=40)
-    p.add_argument("--output", type=Path, default=RESULTS)
-    args = p.parse_args()
-    if args.blocks < 1 or args.runs < 4:
-        p.error("Need positive blocks and at least four runs")
-    cells = []
-    for block in range(1, args.blocks + 1):
-        names = list(CONFIGS)
-        random.Random(20261105 + block).shuffle(names)
-        cells.extend((block, name) for name in names)
-    print(json.dumps({"plan": cells, "runs_per_invocation": args.runs,
-                      "events": EVENTS, "important": "external attach, not per-run synchronized"},
-                     indent=2), flush=True)
-    if args.check:
-        return
-    if not args.run:
-        p.error("Pass --check or --run")
-    if os.geteuid() == 0:
-        p.error("Run as normal user")
-    if not BINARY.is_file():
-        p.error(f"Release binary missing: {BINARY}; build it first")
-    args.output.mkdir(parents=True, exist_ok=True)
-    manifest = args.output / "manifest.jsonl"
-    if manifest.exists():
-        p.error(f"Output already exists: {manifest}; use a new --output")
-    with manifest.open("x") as file:
-        for block, name in cells:
-            dest = args.output / f"block-{block:02d}-{name}"
-            row = collect(name, block, args.runs, dest)
-            file.write(json.dumps(row) + "\n")
-            file.flush()
-            print(f"Completed block={block} config={name}", flush=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--check", action="store_true")
+    group.add_argument("--run", action="store_true")
+    args = parser.parse_args()
+    print(json.dumps(execute(check=args.check), indent=2))
 
 
 if __name__ == "__main__":
