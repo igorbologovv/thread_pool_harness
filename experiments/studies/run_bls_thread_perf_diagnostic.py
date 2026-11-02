@@ -78,8 +78,22 @@ def spec():
     }, data, rendered
 
 
-def execute(check=False):
+def execute(check=False, smoke=False):
     summary, data, rendered = spec()
+    generated = GENERATED
+    destination = OUTPUT
+    if smoke:
+        data["experiment"]["name"] += "-smoke"
+        data["repetitions"]["blocks"] = 1
+        generated = GENERATED / "smoke"
+        destination = OUTPUT.parent / "smoke"
+        data["artifacts"]["output_root"] = str(destination.relative_to(ROOT))
+        rendered = render_toml(data)
+        invocations = len(make_plan(data, None))
+        summary = {**summary, "experiment_name": data["experiment"]["name"],
+                   "invocations": invocations,
+                   "physical_runs": invocations * REPETITIONS_PER_PASS * PASS_COUNT,
+                   "output_root": str(destination)}
     if check:
         return summary
     if os.geteuid() == 0:
@@ -90,16 +104,16 @@ def execute(check=False):
         raise RuntimeError("Commit tracked changes before collecting")
     subprocess.run([sys.executable, "-m", "experiments.studies.check_perf_scope"],
                    cwd=ROOT, check=True)
-    GENERATED.mkdir(parents=True, exist_ok=True)
-    definition = GENERATED / (STUDY + ".toml")
+    generated.mkdir(parents=True, exist_ok=True)
+    definition = generated / (STUDY + ".toml")
     if definition.exists() and definition.read_text() != rendered:
         raise RuntimeError("Conflicting generated TOML")
     definition.write_text(rendered)
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    with (OUTPUT / ".study-run.lock").open("w") as lock:
+    destination.mkdir(parents=True, exist_ok=True)
+    with (destination / ".study-run.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        prior = existing_campaign(data["experiment"]["name"], definition, OUTPUT)
-        if prior is None and any(OUTPUT.glob(data["experiment"]["name"] + "-*")):
+        prior = existing_campaign(data["experiment"]["name"], definition, destination)
+        if prior is None and any(destination.glob(data["experiment"]["name"] + "-*")):
             raise RuntimeError("Conflicting campaign")
         if prior is None or not completed(prior, summary["invocations"]):
             subprocess.run(command("prepare", definition), cwd=ROOT, check=True)
@@ -125,8 +139,9 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true")
     group.add_argument("--run", action="store_true")
+    group.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(execute(check=args.check), indent=2))
+    print(json.dumps(execute(check=args.check, smoke=args.smoke), indent=2))
 
 
 if __name__ == "__main__":
