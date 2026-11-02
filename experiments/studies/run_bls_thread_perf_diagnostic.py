@@ -83,10 +83,10 @@ def execute(check=False, smoke=False):
     generated = GENERATED
     destination = OUTPUT
     if smoke:
-        data["experiment"]["name"] += "-smoke"
+        data["experiment"]["name"] += "-smoke-counter-diagnostic"
         data["repetitions"]["blocks"] = 1
-        generated = GENERATED / "smoke"
-        destination = OUTPUT.parent / "smoke"
+        generated = GENERATED / "smoke-counter-diagnostic"
+        destination = OUTPUT.parent / "smoke-counter-diagnostic"
         data["artifacts"]["output_root"] = str(destination.relative_to(ROOT))
         rendered = render_toml(data)
         invocations = len(make_plan(data, None))
