@@ -129,8 +129,8 @@ def execute(check=False, smoke=False):
         subprocess.run([sys.executable, "-m",
                         "experiments.studies.audit_bls_thread_perf",
                         str(prior), str(summary["physical_runs"])], cwd=ROOT, check=True)
-        if not (prior / "paired_effects.csv").exists():
-            subprocess.run(command("analyze", definition, prior), cwd=ROOT, check=True)
+        subprocess.run([sys.executable, "-m", "experiments.studies.analyze_bls_thread_perf",
+                        str(prior)], cwd=ROOT, check=True)
     return {**summary, "completed": True, "campaign_dir": str(prior)}
 
 
