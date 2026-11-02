@@ -21,7 +21,7 @@ def save_csv(path, rows):
     if not rows:
         raise RuntimeError(f"No rows for {path}")
     with path.open("w", newline="") as fp:
-        writer = csv.DictWriter(fp, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(fp, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
         writer.writeheader()
         writer.writerows(rows)
 
