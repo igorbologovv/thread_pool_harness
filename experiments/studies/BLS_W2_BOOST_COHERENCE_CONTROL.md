@@ -22,7 +22,7 @@ of 40 blocks (20 boost-on, 20 boost-off); phases ordered:
 ON OFF OFF ON ON OFF OFF ON.
 
 Five blocks per phase; each scheduler measured twice per each of two
-distinct PMU passes. **160 physical benchmark runs**, not counting
+distinct PMU passes. **320 physical benchmark runs**, not counting
 preparation or warmups. Per-TID PMU raw records and run timings are archived.
 Power-mode metadata, governor and policy frequency bounds are recorded before
 and after each phase. Each phase is audited, and a stand-alone symmetric
@@ -74,7 +74,7 @@ to run. Check the final boost state manually after any power loss or SIGKILL.
 
 Keep the generated phase directories, SQLite files, `power_before.json`,
 `power_after.json`, raw per-thread perf, and console log. Compare statistics
-by phase and boost mode; do not equate 20 blocks to 160 independent
+by phase and boost mode; do not equate 20 blocks to 320 independent
 randomized blocks.
 
 ## Further coherence isolation
