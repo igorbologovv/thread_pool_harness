@@ -92,11 +92,23 @@ pub(super) fn validate_and_aggregate(
         if !seen.insert((tid, base)) {
             return Err(format!("duplicate perf record: TID {tid}, event {}", metric.event_name).into());
         }
-        let value = metric.counter_value
-            .ok_or("missing per-thread counter value")?;
+        // A parked worker may have no scheduled CPU time. perf can then
+        // report <not counted> rather than a numeric zero for a PMU event.
+        // Do not impute zero: show the exact affected TID/event/record.
+        let value = metric.counter_value.ok_or_else(|| {
+            format!(
+                "missing per-thread counter: tid={tid} role={} event={} status={} 
+                 percent_running={:?} raw_record={}",
+                roles[&tid], metric.event_name, metric.status, metric.percent_running, record
+            )
+        })?;
         if metric.status != "ok" || !value.is_finite() || value < 0.0 ||
            metric.percent_running.is_some_and(|pct| !(99.5..=100.01).contains(&pct)) {
-            return Err(format!("invalid per-thread event {metric:?}").into());
+            return Err(format!(
+                "invalid per-thread event: tid={tid}, role={}, event={}, \
+                 status={}, value={value}, running={:?}, raw_record={record}",
+                roles[&tid], metric.event_name, metric.status, metric.percent_running
+            ).into());
         }
         record["tid"] = json!(tid);
         record["role"] = json!(roles[&tid]);
