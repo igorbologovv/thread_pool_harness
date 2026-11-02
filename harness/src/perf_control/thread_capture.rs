@@ -213,3 +213,91 @@ pub(super) fn validate_and_aggregate(
     doc["inactive_tids"] = json!(inactive_tids);
     Ok((serde_json::to_string(&doc)?, totals.into_values().collect()))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (String, Vec<Value>, Vec<String>) {
+        let threads = vec![
+            json!({"tid": 100, "role": "pacer", "comm": "harness"}),
+            json!({"tid": 101, "role": "worker", "comm": "threadance-00"}),
+            json!({"tid": 102, "role": "worker", "comm": "threadance-01"}),
+        ];
+        let mut records = Vec::new();
+        for tid in [100, 101, 102] {
+            for event in ["task-clock", "cycles:uk"] {
+                let idle = tid == 102;
+                records.push(json!({
+                    "thread": format!("threadance-{tid}"),
+                    "event": event,
+                    "counter-value": if idle { "<not counted>" } else { "123.5" },
+                    "event-runtime": if idle { 0 } else { 400000 },
+                    "pcnt-running": 100.0,
+                    "unit": if event == "task-clock" { "msec" } else { "" },
+                }));
+            }
+        }
+        let raw = json!({"records": records, "unparsed": [], "stderr": ""}).to_string();
+        (raw, threads, vec!["task-clock".to_owned(), "cycles:uk".to_owned()])
+    }
+
+    #[test]
+    fn fully_inactive_worker_is_explicit_and_preserves_raw_not_counted() {
+        let (raw, threads, events) = fixture();
+        let (stored, totals) = validate_and_aggregate(raw, vec![], &threads, &events).unwrap();
+        let doc: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(doc["inactive_tids"], json!([102]));
+        let inactive = doc["records"].as_array().unwrap().iter()
+            .filter(|record| record["tid"] == 102).collect::<Vec<_>>();
+        assert_eq!(inactive.len(), 2);
+        for record in inactive {
+            assert_eq!(record["counter-value"], "<not counted>");
+            assert_eq!(record["measurement_state"], "inactive-no-scheduled-runtime");
+            assert_eq!(record["accounting_value"], 0.0);
+        }
+        assert_eq!(totals.len(), 2);
+        for counter in totals {
+            assert_eq!(counter.counter_value, Some(247.0));
+            assert_eq!(counter.status, "ok");
+        }
+    }
+
+    #[test]
+    fn active_thread_missing_cycles_must_fail() {
+        let (raw, threads, events) = fixture();
+        let mut doc: Value = serde_json::from_str(&raw).unwrap();
+        let cycles = doc["records"].as_array_mut().unwrap().iter_mut()
+            .find(|record| record["thread"] == "threadance-101"
+                && record["event"] == "cycles:uk").unwrap();
+        cycles["counter-value"] = json!("<not counted>");
+        cycles["event-runtime"] = json!(0);
+        let result = validate_and_aggregate(doc.to_string(), vec![], &threads, &events);
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("missing ACTIVE-thread counter"), "{message}");
+    }
+
+    #[test]
+    fn zero_task_clock_with_positive_cycles_is_not_inactive() {
+        let (raw, threads, events) = fixture();
+        let mut doc: Value = serde_json::from_str(&raw).unwrap();
+        let clock = doc["records"].as_array_mut().unwrap().iter_mut()
+            .find(|record| record["thread"] == "threadance-102"
+                && record["event"] == "task-clock").unwrap();
+        clock["counter-value"] = json!("0");
+        let result = validate_and_aggregate(doc.to_string(), vec![], &threads, &events);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn missing_worker_event_must_fail() {
+        let (raw, threads, events) = fixture();
+        let mut doc: Value = serde_json::from_str(&raw).unwrap();
+        doc["records"].as_array_mut().unwrap().retain(|record| {
+            !(record["thread"] == "threadance-102" && record["event"] == "cycles:uk")
+        });
+        let result = validate_and_aggregate(doc.to_string(), vec![], &threads, &events);
+        assert!(result.unwrap_err().to_string().contains("missing per-thread records"));
+    }
+}
