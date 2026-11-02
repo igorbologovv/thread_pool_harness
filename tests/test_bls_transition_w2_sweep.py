@@ -9,7 +9,7 @@ from experiments.studies.run_bls_transition_w2_sweep import (
 
 
 class TransitionSweepTests(unittest.TestCase):
-    def test_eight_cells_256_tasks_and_equal_physical_rates_by_mode(self):
+    def test_twelve_cells_256_tasks_and_equal_physical_rates_by_mode(self):
         source = {
             "experiment": {"name": "bls-normalized-w2-load05000-fixed-arrivals",
                            "workload": "bls-aggregate-verify", "profile": "standard"},
@@ -53,9 +53,9 @@ class TransitionSweepTests(unittest.TestCase):
                        side_effect=lambda value: original_loads(value) if value.lstrip().startswith("[") else perf
                    ):
             entries, configs = spec()
-        self.assertEqual(len(entries), 8)
-        self.assertEqual(len(configs), 8)
-        self.assertEqual(sum(row["measured_runs"] for row in entries), 3840)
+        self.assertEqual(len(entries), 12)
+        self.assertEqual(len(configs), 12)
+        self.assertEqual(sum(row["measured_runs"] for row in entries), 5760)
         self.assertEqual({row["load_fraction"] for row in entries}, set(LOADS))
         self.assertTrue(all(row["work_units"] == WORK_UNITS for row in entries))
         self.assertEqual(
