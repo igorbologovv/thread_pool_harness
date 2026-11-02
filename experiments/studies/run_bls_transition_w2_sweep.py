@@ -1,7 +1,7 @@
-"""Focused, paired 2-worker BLS load sweep across the 50–75% transition.
+"""Focused, paired 2-worker BLS load sweep across the 50–75% transition, including both endpoints.
 
 Reuses the archived 50% BLS configuration and final two-pass perf protocol.
-All eight new load/mode cells use the *same 256 tasks*, avoiding the old
+All twelve new load/mode cells use the *same 256 tasks*, avoiding the old
 rate-dependent task-count confound. No archived campaign is modified.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from experiments.studies.run_bls_normalized_deep_final import (
 STUDY = "bls-transition-w2-sweep"
 OUTPUT = ROOT / "results/studies" / STUDY / "campaigns"
 GENERATED = ROOT / "experiments/generated" / STUDY
-LOADS = (0.55, 0.60, 0.65, 0.70)
+LOADS = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75)
 MODES = ("fixed-arrivals", "bursty-arrivals")
 WORK_UNITS = 256
 BLOCKS = 20
@@ -64,7 +64,7 @@ def spec() -> tuple[list[dict], dict[Path, str]]:
             data["analysis"]["bootstrap_seed"] = 20261102
             data["artifacts"]["output_root"] = str(OUTPUT.relative_to(ROOT))
             # The 256-task prefix, dataset identity, wake strategies and PMU
-            # definitions are identical across the 8 new conditions.
+            # definitions are identical across the 12 new conditions.
             if (WORK_UNITS - 1) / data["delivery"]["arrival_rates"][0] < 0.2:
                 raise ValueError("Arrival window below 200ms")
             serialized = render_toml(data)
@@ -83,8 +83,8 @@ def spec() -> tuple[list[dict], dict[Path, str]]:
                 measured_runs=invocations * REPETITIONS_PER_PASS * PASS_COUNT,
             ))
     entries.sort(key=lambda row: (row["mode"], row["load_fraction"]))
-    if len(entries) != 8 or sum(r["measured_runs"] for r in entries) != 3840:
-        raise ValueError("Expected 8 campaigns and 3840 measured executions")
+    if len(entries) != 12 or sum(r["measured_runs"] for r in entries) != 5760:
+        raise ValueError("Expected 12 campaigns and 5760 measured executions")
     return entries, definitions
 
 
