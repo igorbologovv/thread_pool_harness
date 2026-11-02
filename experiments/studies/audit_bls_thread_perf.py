@@ -35,17 +35,30 @@ def audit(folder: Path, expected_runs: int) -> dict:
             if name in observed[tid]:
                 raise RuntimeError(f"Duplicate event {name} for TID {tid} in run {run_id}")
             observed[tid].add(name)
-            val = float(event["counter-value"])
+            state = event["measurement_state"]
+            raw_value = event["counter-value"]
+            if state == "inactive-no-scheduled-runtime":
+                if raw_value != "<not counted>" and float(raw_value) != 0.0:
+                    raise RuntimeError(f"Invalid inactive TID value {tid} {name}")
+                val = 0.0
+                if float(event["accounting_value"]) != 0.0:
+                    raise RuntimeError(f"Invalid inactive accounting for {tid}")
+            elif state == "counted":
+                val = float(raw_value)
+                if float(event["accounting_value"]) != val:
+                    raise RuntimeError(f"Accounting mismatch {tid} {name}")
+            else:
+                raise RuntimeError(f"Unknown measurement state {state}")
             if not 0 <= val < float("inf"):
                 raise RuntimeError(f"Invalid counter {name} for run {run_id}")
-            rows.append((run_id, perf_pass, tid, tids[tid], name, val))
+            rows.append((run_id, perf_pass, tid, tids[tid], name, val, state, raw_value))
         if set(observed) != set(tids):
             raise RuntimeError(f"Missing TID in run {run_id}")
         if perf_pass == "cpu-cache" and any(not required.issubset(seen) for seen in observed.values()):
             raise RuntimeError(f"Missing required events in run {run_id}")
     with output.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["run_id", "perf_pass", "tid", "role", "event", "value"])
+        w.writerow(["run_id", "perf_pass", "tid", "role", "event", "accounting_value", "measurement_state", "raw_value"])
         w.writerows(rows)
     return {"runs": len(captures), "events": len(rows), "csv": str(output)}
 
