@@ -1,5 +1,6 @@
 """Planning tests for the 2-worker transition sweep; no benchmarks."""
 import unittest
+import tomllib
 from unittest.mock import patch
 
 from experiments.studies.run_bls_transition_w2_sweep import (
@@ -45,10 +46,11 @@ class TransitionSweepTests(unittest.TestCase):
             {"name": "cpu-cache", "events": ["cycles:uk", "task-clock"]},
             {"name": "l1-branches", "events": ["branches:uk", "task-clock"]},
         ]}}
+        original_loads = tomllib.loads
         with patch("experiments.studies.run_bls_transition_w2_sweep.archived_campaigns",
                    return_value=[(None, source), (None, burst)]), patch(
                        "experiments.studies.run_bls_transition_w2_sweep.tomllib.loads",
-                       side_effect=lambda value: __import__("tomllib").loads(value) if value.lstrip().startswith("[") else perf
+                       side_effect=lambda value: original_loads(value) if value.lstrip().startswith("[") else perf
                    ):
             entries, configs = spec()
         self.assertEqual(len(entries), 8)
