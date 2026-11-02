@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run eight strictly ordered power-mode phases and restore initial boost on exit.
 set -Eeuo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 BOOST=/sys/devices/system/cpu/cpufreq/boost
 if [[ ! -f "$BOOST" ]]; then
