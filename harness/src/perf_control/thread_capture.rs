@@ -52,9 +52,12 @@ pub(super) fn validate_and_aggregate(
     expected_events: &[String],
 ) -> PerfResult<(String, Vec<PerfMetric>)> {
     let mut doc: Value = serde_json::from_str(&raw)?;
+    if !doc["unparsed"].as_array().is_some_and(|v| v.is_empty()) {
+        return Err("unparseable per-thread perf output".into());
+    }
     let records = doc.get_mut("records").and_then(Value::as_array_mut)
         .ok_or("missing perf records array")?;
-    if records.is_empty() || !doc["unparsed"].as_array().is_some_and(|v| v.is_empty()) {
+    if records.is_empty() {
         return Err("empty or unparseable per-thread perf output".into());
     }
 
