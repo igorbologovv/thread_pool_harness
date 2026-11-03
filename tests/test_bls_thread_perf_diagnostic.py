@@ -1,6 +1,5 @@
 """Planning tests; no actual BLS measurement is executed."""
 import unittest
-from unittest.mock import patch
 from experiments.studies.run_bls_thread_perf_diagnostic import spec, IDS, EVENTS
 
 
@@ -11,10 +10,7 @@ class ThreadPerfDiagnosticTests(unittest.TestCase):
         self.assertTrue(all("task-clock" in p["events"] for p in EVENTS))
 
     def test_campaign_uses_256_bls_wu_and_20_randomized_blocks(self):
-        from experiments.studies.run_bls_transition_w2_sweep import spec as transition
-        with patch("experiments.studies.run_bls_thread_perf_diagnostic.parent_spec",
-                   side_effect=transition):
-            summary, data, text = spec()
+        summary, data, text = spec()
         self.assertEqual(summary["invocations"], 40)
         self.assertEqual(summary["physical_runs"], 160)
         self.assertEqual(data["workload"]["workers"], 2)
