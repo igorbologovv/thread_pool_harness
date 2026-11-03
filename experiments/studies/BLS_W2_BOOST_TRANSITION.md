@@ -32,7 +32,7 @@ point before measuring it.
   blocks is randomized independently.
 - Four warmups per invocation; two measured repeats per PMU pass, two
   separate PMU passes, with alternating pass order.
-- **880 measured physical runs** = 11 loads x 2 waves x 10 blocks x
+- **1760 measured physical runs** = 11 loads x 2 waves x 10 blocks x
   2 schedulers x 2 passes x 2 repeats. Warmups are separate.
 
 Per-run counters are strictly scoped to pacer and two worker TIDs, retained
