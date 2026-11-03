@@ -22,7 +22,7 @@ from experiments.common.campaign import ROOT, make_plan, read_definition, verify
 from experiments.common.study import render_toml
 from experiments.common.study_run import command, completed, existing_campaign
 from experiments.studies.run_bls_thread_perf_diagnostic import (
-    EVENTS, IDS, spec as base_spec,
+    EVENTS, IDS,
 )
 from experiments.studies.run_bls_normalized_deep_final import (
     PASS_COUNT, REPETITIONS_PER_PASS, audit_perf_captures,
@@ -34,6 +34,7 @@ GENERATED = ROOT / "experiments/generated" / NAME
 PHASE_BOOST = ("on", "off", "off", "on", "on", "off", "off", "on")
 BLOCKS_PER_PHASE = 5
 BOOST_PATH = Path("/sys/devices/system/cpu/cpufreq/boost")
+SOURCE = ROOT / "experiments/studies/bls_w2_per_thread_source.toml"
 
 
 def mode(phase: int) -> str:
@@ -43,8 +44,7 @@ def mode(phase: int) -> str:
 
 
 def definition(phase: int, smoke: bool = False):
-    _, original, _ = base_spec()
-    data = copy.deepcopy(original)
+    data = copy.deepcopy(tomllib.loads(SOURCE.read_text()))
     tag = f"phase-{phase:02d}-{mode(phase)}"
     if smoke:
         tag += "-smoke"
