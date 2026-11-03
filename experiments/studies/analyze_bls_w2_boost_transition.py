@@ -80,7 +80,8 @@ def summarize(x: list[float], seed: int, *, strata: list[int] | None = None):
             sampled.extend(rng.choices(population, k=len(population)))
         estimates.append(statistics.mean(sampled))
     estimates.sort()
-    return mean, variance, estimates[249], estimates[9749]
+    n = len(estimates)
+    return mean, variance, estimates[max(0, int(0.025 * n) - 1)], estimates[min(n - 1, int(0.975 * n) - 1)]
 
 
 def inspect_campaign(folder: Path, wave: int, load: float) -> list[dict]:
