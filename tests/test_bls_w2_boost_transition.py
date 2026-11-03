@@ -6,6 +6,7 @@ from unittest.mock import patch
 from experiments.studies.run_bls_w2_boost_transition import (
     LOADS,
     ordered_cells,
+    plan,
 )
 from experiments.studies.analyze_bls_w2_boost_transition import (
     aggregate,
@@ -21,6 +22,13 @@ class TransitionPlanTests(unittest.TestCase):
         self.assertEqual([v for w, v in cells if w == 2],
                          list(reversed([v for w, v in cells if w == 1])))
         self.assertEqual(LOADS[3:6], (0.475, 0.50, 0.525))
+
+    def test_full_and_smoke_plan_counts(self):
+        full = plan()
+        self.assertEqual(len(full), 22)
+        self.assertEqual(sum(x["physical_runs"] for x in full), 1760)
+        self.assertEqual({x["physical_runs"] for x in full}, {80})
+        self.assertEqual(plan(smoke=True)[0]["physical_runs"], 4)
 
     def test_wave_stratified_resampling_is_repeatable(self):
         x = [1, 2, 3, 10, 11, 12]
