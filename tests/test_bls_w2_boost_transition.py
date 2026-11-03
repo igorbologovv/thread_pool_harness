@@ -28,7 +28,7 @@ class TransitionPlanTests(unittest.TestCase):
         self.assertEqual(len(full), 22)
         self.assertEqual(sum(x["physical_runs"] for x in full), 1760)
         self.assertEqual({x["physical_runs"] for x in full}, {80})
-        self.assertEqual(plan(smoke=True)[0]["physical_runs"], 4)
+        self.assertEqual(plan(smoke=True)[0]["physical_runs"], 8)
 
     def test_wave_stratified_resampling_is_repeatable(self):
         x = [1, 2, 3, 10, 11, 12]
