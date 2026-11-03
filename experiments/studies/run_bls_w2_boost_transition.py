@@ -30,7 +30,6 @@ from experiments.studies.run_bls_normalized_deep_final import (
 from experiments.studies.run_bls_thread_perf_diagnostic import (
     EVENTS,
     IDS,
-    spec as thread_perf_spec,
 )
 from experiments.studies.run_bls_w2_boost_control import (
     BOOST_PATH,
@@ -58,7 +57,7 @@ def ordered_cells() -> list[tuple[int, float]]:
 
 @lru_cache(maxsize=1)
 def original_definition() -> dict:
-    _, data, _ = thread_perf_spec()
+    data = tomllib.loads((ROOT / "experiments/studies/bls_w2_per_thread_source.toml").read_text())
     if data["delivery"]["arrival_rates"] != [647.0]:
         raise ValueError("The historical 50% source rate is not 647 WU/s")
     return data
@@ -116,7 +115,7 @@ def plan(smoke: bool = False) -> list[dict]:
     rows = [definition(wave, load, smoke)[0] for wave, load in cells]
     if not smoke:
         assert len(rows) == 22
-        assert sum(row["physical_runs"] for row in rows) == 880
+        assert sum(row["physical_runs"] for row in rows) == 1760
         assert all(row["blocks"] == 10 and row["physical_runs"] == 40 for row in rows)
     else:
         assert rows[0]["physical_runs"] == 4
