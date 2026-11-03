@@ -240,16 +240,31 @@ impl PerfSession {
         } else {
             None
         };
-        let mut args = vec!["stat".to_owned(), "-j".to_owned(), "--no-big-num".to_owned(),
-                            "-e".to_owned(), events.to_owned()];
+        let mut args = vec![
+            "stat".to_owned(),
+            "-j".to_owned(),
+            "--no-big-num".to_owned(),
+            "-e".to_owned(),
+            events.to_owned(),
+        ];
         if let Some(threads) = &per_thread {
-            args.extend(["--per-thread".to_owned(), "--no-inherit".to_owned(),
-                         "-t".to_owned(), thread_capture::tid_list(threads)?]);
+            args.extend([
+                "--per-thread".to_owned(),
+                "--no-inherit".to_owned(),
+                "-t".to_owned(),
+                thread_capture::tid_list(threads)?,
+            ]);
         } else {
             args.extend(["-p".to_owned(), pid]);
         }
-        args.extend(["-D".to_owned(), "-1".to_owned(), "--control".to_owned(),
-                     control_spec, "-o".to_owned(), output_path.display().to_string()]);
+        args.extend([
+            "-D".to_owned(),
+            "-1".to_owned(),
+            "--control".to_owned(),
+            control_spec,
+            "-o".to_owned(),
+            output_path.display().to_string(),
+        ]);
 
         let command_line = format_command("perf", &args);
 
@@ -373,8 +388,9 @@ impl PerfSession {
 
         let (raw_json, metrics) = parse_perf_output(&raw_output, &stderr)?;
         let (raw_json, metrics) = match &self.per_thread {
-            Some(threads) => thread_capture::validate_and_aggregate(
-                raw_json, metrics, threads, &self.events)?,
+            Some(threads) => {
+                thread_capture::validate_and_aggregate(raw_json, metrics, threads, &self.events)?
+            }
             None => (raw_json, metrics),
         };
 
