@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 
 use crate::result::RunResult;
 
+#[path = "perf_control/thread_capture.rs"]
+mod thread_capture;
+
 type PerfError = Box<dyn Error + Send + Sync + 'static>;
 type PerfResult<T> = Result<T, PerfError>;
 
@@ -197,6 +200,8 @@ struct PerfSession {
 
     temp_dir: PathBuf,
     output_path: PathBuf,
+    per_thread: Option<Vec<Value>>,
+    events: Vec<String>,
 
     command_line: String,
 }
@@ -229,24 +234,37 @@ impl PerfSession {
             .open(&ack_path)?;
 
         let pid = std::process::id().to_string();
-
         let control_spec = format!("fifo:{},{}", control_path.display(), ack_path.display(),);
-
-        let args = vec![
+        let per_thread = if env::var("THREADANCE_PER_THREAD_PERF").as_deref() == Ok("1") {
+            Some(thread_capture::snapshot_threads()?)
+        } else {
+            None
+        };
+        let mut args = vec![
             "stat".to_owned(),
             "-j".to_owned(),
             "--no-big-num".to_owned(),
             "-e".to_owned(),
             events.to_owned(),
-            "-p".to_owned(),
-            pid,
+        ];
+        if let Some(threads) = &per_thread {
+            args.extend([
+                "--per-thread".to_owned(),
+                "--no-inherit".to_owned(),
+                "-t".to_owned(),
+                thread_capture::tid_list(threads)?,
+            ]);
+        } else {
+            args.extend(["-p".to_owned(), pid]);
+        }
+        args.extend([
             "-D".to_owned(),
             "-1".to_owned(),
             "--control".to_owned(),
             control_spec,
             "-o".to_owned(),
             output_path.display().to_string(),
-        ];
+        ]);
 
         let command_line = format_command("perf", &args);
 
@@ -262,6 +280,8 @@ impl PerfSession {
             ack,
             temp_dir,
             output_path,
+            per_thread,
+            events: events.split(',').map(str::to_owned).collect(),
             command_line,
         };
 
@@ -367,6 +387,12 @@ impl PerfSession {
         let raw_output = fs::read_to_string(&self.output_path).unwrap_or_default();
 
         let (raw_json, metrics) = parse_perf_output(&raw_output, &stderr)?;
+        let (raw_json, metrics) = match &self.per_thread {
+            Some(threads) => {
+                thread_capture::validate_and_aggregate(raw_json, metrics, threads, &self.events)?
+            }
+            None => (raw_json, metrics),
+        };
 
         // The harness sends SIGINT to make perf stat flush its final counters.
         // Some perf versions exit with 130 (128 + SIGINT) on this normal path.
