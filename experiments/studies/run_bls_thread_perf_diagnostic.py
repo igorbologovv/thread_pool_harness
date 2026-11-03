@@ -18,7 +18,6 @@ from pathlib import Path
 from experiments.common.campaign import ROOT, make_plan, read_definition, verify_campaign_database
 from experiments.common.study import render_toml
 from experiments.common.study_run import command, completed, existing_campaign
-from experiments.studies.run_bls_transition_w2_sweep import spec as parent_spec
 from experiments.studies.run_bls_normalized_deep_final import (
     PASS_COUNT, REPETITIONS_PER_PASS, audit_perf_captures,
 )
@@ -41,12 +40,8 @@ EVENTS = [
 
 
 def spec():
-    _, definitions = parent_spec()
-    source = next(
-        text for path, text in definitions.items()
-        if "load05000-fixed-arrivals" in path.name
-    )
-    data = tomllib.loads(source)
+    source = ROOT / "experiments/studies/bls_w2_per_thread_source.toml"
+    data = tomllib.loads(source.read_text())
     data["experiment"]["name"] = STUDY + "-w2-load05000-fixed-arrivals"
     data["configurations"] = [
         config for config in data["configurations"] if config["id"] in IDS
