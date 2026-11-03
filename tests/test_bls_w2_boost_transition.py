@@ -56,7 +56,7 @@ class TransitionPlanTests(unittest.TestCase):
                                     "mean_lateness_us": 12.0,
                                     "max_lateness_us": 40.0,
                                 })
-        self.assertEqual(len(runs), 880)
+        self.assertEqual(len(runs), 1760)
         with patch('experiments.studies.analyze_bls_w2_boost_transition.BOOTSTRAPS', 100):
             blocks, summaries, contrasts = aggregate(runs)
         self.assertGreater(len(blocks), 1000)
