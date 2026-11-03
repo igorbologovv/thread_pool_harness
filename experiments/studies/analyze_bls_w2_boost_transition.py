@@ -35,7 +35,6 @@ METRICS = (
     "worker0_cpu_ms_per_wu",
     "worker1_cpu_ms_per_wu",
     "worker0_ghz",
-    "worker1_ghz",
     "worker1_active_gt_1ms",
     "cache_misses_per_wu",
     "branch_misses_per_wu",
@@ -236,10 +235,6 @@ def aggregate(runs: list[dict]):
                 for config in IDS:
                     rows = [b for b in available if b["configuration"] == config]
                     if len(rows) != 20:
-                        # E.g. an entirely idle worker in all repeats has no
-                        # meaningful frequency. Report no frequency estimate.
-                        if metric == "worker1_ghz":
-                            continue
                         raise ValueError(f"Missing block means {load}/{perf_pass}/{metric}/{config}")
                     vals = [b["mean"] for b in rows]
                     m, v, lo, hi = summarize(vals, 20261115 + round(load * 10000),
@@ -255,8 +250,6 @@ def aggregate(runs: list[dict]):
                         ka = (wave, load, block, IDS[0], perf_pass, metric)
                         kb = (wave, load, block, IDS[1], perf_pass, metric)
                         if ka not in by_key or kb not in by_key:
-                            if metric == "worker1_ghz":
-                                continue
                             raise ValueError(f"Missing paired block {ka}/{kb}")
                         diffs.append(by_key[kb] - by_key[ka])
                         strata.append(wave)
