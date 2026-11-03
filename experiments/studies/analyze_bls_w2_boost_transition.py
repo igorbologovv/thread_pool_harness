@@ -307,8 +307,8 @@ def plots(summaries: list[dict], output: Path) -> bool:
 
 def analyze(root: Path = BASE) -> dict:
     runs = load_runs(root)
-    if len(runs) != 880:
-        raise ValueError(f"Expected 880 measured physical runs, got {len(runs)}")
+    if len(runs) != 1760:
+        raise ValueError(f"Expected 1760 measured physical runs, got {len(runs)}")
     output = root / "analysis"
     output.mkdir(parents=True, exist_ok=True)
     blocks, summaries, contrasts = aggregate(runs)
