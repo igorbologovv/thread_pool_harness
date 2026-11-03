@@ -1,6 +1,7 @@
 """Pure planning/statistical tests for the boost-on load transition."""
 import math
 import unittest
+from unittest.mock import patch
 
 from experiments.studies.run_bls_w2_boost_transition import (
     LOADS,
@@ -56,7 +57,8 @@ class TransitionPlanTests(unittest.TestCase):
                                     "max_lateness_us": 40.0,
                                 })
         self.assertEqual(len(runs), 880)
-        blocks, summaries, contrasts = aggregate(runs)
+        with patch('experiments.studies.analyze_bls_w2_boost_transition.BOOTSTRAPS', 100):
+            blocks, summaries, contrasts = aggregate(runs)
         self.assertGreater(len(blocks), 1000)
         contrast = next(r for r in contrasts if r["load"] == 0.50
                         and r["pass"] == "cpu-cache"
