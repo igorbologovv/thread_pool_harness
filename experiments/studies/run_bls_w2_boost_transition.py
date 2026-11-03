@@ -116,7 +116,7 @@ def plan(smoke: bool = False) -> list[dict]:
     if not smoke:
         assert len(rows) == 22
         assert sum(row["physical_runs"] for row in rows) == 1760
-        assert all(row["blocks"] == 10 and row["physical_runs"] == 40 for row in rows)
+        assert all(row["blocks"] == 10 and row["physical_runs"] == 80 for row in rows)
     else:
         assert rows[0]["physical_runs"] == 4
     return rows
