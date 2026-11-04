@@ -113,3 +113,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 Python orchestration and analysis scripts use only the standard library unless otherwise documented.
 
 Raw run-level observations are retained. Analysis does not automatically remove statistical outliers or assume Gaussian sampling distributions. Deep-profile runs are analyzed separately by perf pass rather than pooled together.
+
+
+## Local CI gate before pushing
+
+This repository includes an opt-in versioned pre-push hook in `.githooks/pre-push`.
+Install it **once per clone** (Git cannot distribute local hook settings):
+
+```bash
+git config --local core.hooksPath .githooks
+```
+
+After installation, `git push` runs `scripts/ci-checks.sh`, the **same**
+checks called by GitHub Actions: `cargo fmt --check`, Rust tests, clippy,
+Python tests, real-harness smoke test, shell syntax, and SQLite smoke test.
+Any nonzero exit status blocks that local push. Run the checks yourself with:
+
+```bash
+bash scripts/ci-checks.sh
+```
+
+This gate protects the local Git client; `git push --no-verify` and other
+machines without the hook can bypass it. GitHub Actions runs only after a
+push, so GitHub branch protection / required `checks` status is additionally
+needed to reject merging a failing CI run into `master`.

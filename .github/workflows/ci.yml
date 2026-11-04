@@ -22,49 +22,5 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Rust format
-        run: cargo fmt --all -- --check
-
-      - name: Rust tests
-        run: cargo test --workspace
-
-      - name: Rust clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Python syntax
-        run: |
-          python3 -m py_compile \
-            experiments/common/calibrate_service_time.py \
-            experiments/common/validate_calibration.py \
-            experiments/common/bls_dataset_identity.py \
-            experiments/fixed_wait/run.py \
-            experiments/fixed_wait/analysis.py \
-            experiments/fixed_wait/diagnostics.py \
-            experiments/max_throughput/run.py \
-            experiments/common/campaign.py \
-            experiments/common/analysis.py \
-            experiments/common/study.py \
-            experiments/compute_heavy/run.py \
-            experiments/compute_heavy/analysis.py \
-            experiments/queue_topology/run.py \
-            experiments/queue_topology/analysis.py
-
-      - name: Python campaign tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
-
-      - name: Real harness campaign and resume smoke test
-        run: python3 scripts/smoke_campaign.py
-
-      - name: Shell syntax
-        run: |
-          bash -n scripts/calibrate_service_time.sh
-          bash -n scripts/run_wait_policy_probe.sh
-          bash -n scripts/init_benchmark_db.sh
-
-      - name: Fresh SQLite schema smoke test
-        run: |
-          DB="$(mktemp --suffix=.sqlite3)"
-          rm -f "$DB"
-          ./scripts/init_benchmark_db.sh "$DB"
-          sqlite3 "$DB" 'PRAGMA foreign_key_check;'
-          test "$(sqlite3 "$DB" 'SELECT max(version) FROM schema_migrations;')" = "10"
+      - name: Run the same checks as the pre-push hook
+        run: bash scripts/ci-checks.sh

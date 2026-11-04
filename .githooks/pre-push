@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Install once with: git config --local core.hooksPath .githooks
+# Git invokes this executable automatically before any push.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+echo "pre-push: running the exact checks used by GitHub CI" >&2
+if ! bash "$ROOT/scripts/ci-checks.sh"; then
+  echo "pre-push: checks failed; PUSH BLOCKED. Fix the errors and retry." >&2
+  exit 1
+fi
+echo "pre-push: checks passed; push permitted." >&2
