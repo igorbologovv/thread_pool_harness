@@ -29,8 +29,8 @@ class PinnedControlStudies(unittest.TestCase):
                 self.assertEqual(experiment["repetitions"]["measured_runs_per_block"], 2)
                 self.assertEqual(len(experiment["perf"]["passes"]), 2)
                 labels = {cfg["id"] for cfg in configs}
-                self.assertIn("threadance__spin-then-park__q64__s0", labels)
-                self.assertIn("threadance__spin-then-park__q64__s40", labels)
+                self.assertIn("mpmc-sp0", labels)
+                self.assertIn("mpmc-sp40", labels)
                 fingerprint.append((
                     experiment["workload"]["workers"],
                     experiment["delivery"]["mode"],
