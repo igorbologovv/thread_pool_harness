@@ -233,3 +233,41 @@ The full plan has 7,200 invocations and 28,800 profiled measurements. Do
 as though they were exchangeable repetitions. The benchmark remains on a
 single cached BLS dataset; cache profiling cannot directly establish
 cache-coherence traffic or identify which function caused an event.
+
+
+## Paired pinned BLS controls (clean vs cache interference)
+
+This uses the six scheduler configurations from the BLS saturation recheck
+(Rayon, Bevy, MPMC spin0, MPMC AgaveBackoff, RTRB backlog 1 and 2) plus
+an additional MPMC spin-then-park at 40 us. It reuses the two deep PMU passes
+from `bls_advanced_perf.toml`, with 4 full warmups once per condition followed by
+2 measured runs on each PMU pass. The pass order reverses on even blocks.
+
+Both studies use the same 2500-unit cached BLS workload, 2/4/8/16 workers,
+all-at-once or fixed/bursty arrivals at 900 and 1500 WU/s, 20 randomized
+blocks, and the same randomization seed. Each arm has 12 campaigns, 2800 harness
+invocations, 11200 warmups and 11200 profiled executions. The two separate
+output roots are essential: the runner must never resume interfered measurements
+inside a clean campaign.
+
+Inspect the plans first:
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_pinned_control_clean.toml --check
+python3 -m experiments.common.study_run --spec experiments/studies/bls_pinned_control_interference.toml --check
+```
+
+Collect the clean arm with pinning enabled, then the interfered arm with
+**the same** pinning and the additional background process:
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_pinned_control_clean.toml --run --pin-workers
+python3 -m experiments.common.study_run --spec experiments/studies/bls_pinned_control_interference.toml --run --pin-workers --cache-interference
+```
+
+Do not combine these with historical unpinned results as equivalent repetitions.
+The automatically generated report for each arm summarizes *within-arm* data;
+a direct treatment-effect analysis must match the two arms by worker count,
+delivery/rate, scheduler configuration, and randomized block and inspect raw
+runs and interference timing statistics. At 16 workers the example producer CPU
+15 overlaps worker 15; use the same topology in both arms and record the limitation.
