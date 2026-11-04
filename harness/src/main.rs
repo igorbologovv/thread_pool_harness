@@ -1,3 +1,4 @@
+mod affinity;
 mod cli;
 mod delivery;
 mod perf_control;
@@ -14,6 +15,7 @@ use std::{
 };
 
 use clap::Parser;
+use affinity::{AffinityPlan, PoolKind};
 
 use cli::{Cli, ProfileMode, SchedulerKind, ThreadanceWaitPolicy, WorkloadKind};
 use delivery::DeliverySchedule;
@@ -33,6 +35,9 @@ use workload::{
 
 fn main() {
     let cli = Cli::parse();
+    let affinity = AffinityPlan::new(cli.workers.get(), cli.worker_cpus.as_deref(), cli.producer_cpu)
+        .expect("invalid CPU affinity configuration");
+    affinity.pin_producer().expect("failed to pin benchmark producer");
 
     let benchmark_started_unix_seconds: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -72,7 +77,7 @@ fn main() {
                 &workload_config,
             ));
 
-            run_selected_scheduler(&cli, &workload, &delivery)
+            run_selected_scheduler(&cli, &workload, &delivery, &affinity)
         }
 
         WorkloadKind::BlsAggregateVerify => {
@@ -102,7 +107,7 @@ fn main() {
             dataset.select_work_units(common_config.work_units);
             let workload = Arc::new(dataset);
 
-            run_selected_scheduler(&cli, &workload, &delivery)
+            run_selected_scheduler(&cli, &workload, &delivery, &affinity)
         }
     };
 
@@ -129,6 +134,7 @@ fn run_selected_scheduler<W>(
     cli: &Cli,
     workload: &Arc<W>,
     delivery: &DeliverySchedule,
+    affinity: &AffinityPlan,
 ) -> RepeatedRunOutput
 where
     W: Workload,
@@ -138,11 +144,13 @@ where
             let scheduler =
                 RayonScheduler::new(cli.workers).expect("failed to create Rayon thread pool");
 
+            affinity.pin_workers(PoolKind::Rayon).expect("failed to pin Rayon workers");
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 
         SchedulerKind::Bevy => {
             let scheduler = BevyScheduler::new(cli.workers);
+            affinity.pin_workers(PoolKind::Bevy).expect("failed to pin Bevy workers");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }
@@ -160,6 +168,7 @@ where
             let scheduler =
                 GateScheduler::new(cli.workers, cli.queue_capacity, cli.hot_first_backlog, idle)
                     .expect("failed to create segmented gate ring");
+            affinity.pin_workers(PoolKind::Threadance).expect("failed to pin segmented workers");
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 
@@ -180,6 +189,7 @@ where
                 idle,
             )
             .expect("failed to create segmented rtrb gate ring");
+            affinity.pin_workers(PoolKind::Threadance).expect("failed to pin RTRB workers");
             run_benchmark(cli, &scheduler, workload, delivery)
         }
 
@@ -198,6 +208,7 @@ where
                 }
             }
             .expect("failed to create Threadance thread pool");
+            affinity.pin_workers(PoolKind::Threadance).expect("failed to pin MPMC workers");
 
             run_benchmark(cli, &scheduler, workload, delivery)
         }
