@@ -15,22 +15,29 @@ import sys
 import tomllib
 from pathlib import Path
 
-from experiments.common.campaign import ROOT
+from experiments.common.campaign import ROOT, CACHE_INTERFERENCE_CONFIG
+from experiments.common.cache_interference import (
+    campaign_signals, load_config, run_supervised, verify_mode,
+)
 from experiments.common.study import design, read_study, root_path
 from experiments.common.study_report import generate
 
 
-def command(action: str, definition: Path, folder: Path | None = None) -> list[str]:
+def command(action: str, definition: Path, folder: Path | None = None,
+            *, cache_interference: bool = False) -> list[str]:
     argv = [
         sys.executable, "-m", "experiments.common.campaign", action,
         "--experiment", str(definition),
     ]
     if folder is not None:
         argv.extend(["--campaign", str(folder)])
+    if cache_interference:
+        argv.append("--cache-interference")
     return argv
 
 
-def existing_campaign(name: str, definition: Path, destination: Path) -> Path | None:
+def existing_campaign(name: str, definition: Path, destination: Path,
+                      *, cache_interference: bool = False) -> Path | None:
     """Only select a campaign with a byte-for-byte matching archived TOML."""
     folders = sorted(
         folder for folder in destination.glob(name + "-*")
@@ -42,6 +49,9 @@ def existing_campaign(name: str, definition: Path, destination: Path) -> Path | 
             f"Multiple matching campaigns for {name}; refusing ambiguous resume: "
             + ", ".join(str(folder) for folder in folders)
         )
+    if folders:
+        config = load_config(CACHE_INTERFERENCE_CONFIG) if cache_interference else None
+        verify_mode(folders[0], config)
     return folders[0] if folders else None
 
 
@@ -53,13 +63,15 @@ def completed(folder: Path, expected: int) -> bool:
         return len(list(csv.DictReader(file))) == expected
 
 
-def run_study(spec_path: Path, *, check: bool = False) -> dict:
+def run_study(spec_path: Path, *, check: bool = False,
+              cache_interference: bool = False) -> dict:
     if os.geteuid() == 0:
         raise RuntimeError("Run the study runner as a normal user, not with sudo")
     specification = read_study(spec_path)
     report = design(spec_path, write=not check)
     if check:
         return report
+    interference_config = load_config(CACHE_INTERFERENCE_CONFIG) if cache_interference else None
     # Collection has a clean-git precondition; reject before any preparation.
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -80,19 +92,28 @@ def run_study(spec_path: Path, *, check: bool = False) -> dict:
             raise FileNotFoundError(definition)
         name = campaign["name"]
         print(f"[{index}/{len(report['campaigns'])}] {name}", flush=True)
-        prior = existing_campaign(name, definition, output)
+        prior = existing_campaign(name, definition, output, cache_interference=cache_interference)
+        if prior is not None:
+            verify_mode(prior, interference_config,
+                        completed=completed(prior, campaign["invocations"]))
         if prior is not None and completed(prior, campaign["invocations"]):
             print(f"  Reusing completed campaign: {prior}", flush=True)
             folder = prior
         else:
             # The existing implementation builds the release binary and prepares
             # datasets/calibrations. Repeated preparations are valid but cached.
-            subprocess.run(command("prepare", definition), cwd=ROOT, check=True)
-            subprocess.run(
-                command("resume" if prior else "collect", definition, prior),
-                cwd=ROOT, check=True,
-            )
-            folder = existing_campaign(name, definition, output)
+            subprocess.run(command("prepare", definition,
+                                   cache_interference=cache_interference), cwd=ROOT, check=True)
+            argv = command("resume" if prior else "collect", definition, prior,
+                           cache_interference=cache_interference)
+            if cache_interference:
+                # Forward cancellation to the collection process, allowing it
+                # to reap its benchmark and interferer before this wrapper exits.
+                with campaign_signals():
+                    run_supervised(argv, cwd=ROOT, stop_timeout=15).check_returncode()
+            else:
+                subprocess.run(argv, cwd=ROOT, check=True)
+            folder = existing_campaign(name, definition, output, cache_interference=cache_interference)
             if folder is None:
                 raise RuntimeError(f"Campaign did not produce result folder: {name}")
         if not completed(folder, campaign["invocations"]):
@@ -122,8 +143,11 @@ def main() -> None:
     action.add_argument("--check", action="store_true", help="Only show planned workload")
     action.add_argument("--run", action="store_true",
                         help="Prepare and collect every campaign serially, then report")
+    parser.add_argument("--cache-interference", action="store_true",
+                        help="Enable TOML-configured cache/memory interference for collection")
     args = parser.parse_args()
-    print(json.dumps(run_study(args.spec, check=args.check), indent=2))
+    print(json.dumps(run_study(args.spec, check=args.check,
+                               cache_interference=args.cache_interference), indent=2))
 
 
 if __name__ == "__main__":

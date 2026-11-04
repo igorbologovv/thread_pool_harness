@@ -15,12 +15,15 @@ import subprocess
 import sys
 import time
 import tomllib
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ID = re.compile(r"Stored benchmark: session=\d+ experiment=(\d+) database=")
 RUST = ROOT / "target/release/threadance-harness"
+CACHE_INTERFERER = ROOT / "target/release/cache_interferer"
+CACHE_INTERFERENCE_CONFIG = ROOT / "experiments/studies/cache_interference.toml"
 DELIVERY_FLAGS = {
     "all-at-once", "fixed-arrivals", "steady-arrivals",
     "variable-arrivals", "bursty-arrivals",
@@ -257,11 +260,16 @@ def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
     return args
 
 
-def prepare(data: dict, definition: Path) -> None:
+def prepare(data: dict, definition: Path, *, cache_interference: bool = False) -> None:
     if os.geteuid() == 0:
         raise RuntimeError("Run prepare as a normal user, not with sudo")
     os.environ["RUSTFLAGS"] = "-C target-cpu=native"
-    subprocess.run(["cargo", "build", "--release", "-p", "threadance-harness", "--bin", "threadance-harness"],
+    build = ["cargo", "build", "--release", "-p", "threadance-harness", "--bin", "threadance-harness"]
+    if cache_interference:
+        from experiments.common.cache_interference import load_config
+        load_config(CACHE_INTERFERENCE_CONFIG)
+        build += ["--bin", "cache_interferer"]
+    subprocess.run(build,
                    cwd=ROOT, check=True)
     w = data["workload"]
     if data["experiment"]["workload"] == "bls-aggregate-verify":
@@ -476,12 +484,23 @@ def verify_campaign_database(folder: Path, data: dict, expected_invocations: int
             + "\nMeasurements have been preserved; do not delete the database."
         )
 
-def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> Path:
+def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
+            *, cache_interference: bool = False) -> Path:
     os.chdir(ROOT)
     if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
         raise RuntimeError("Tracked tree is dirty; commit before collecting data")
     if not RUST.is_file():
         raise RuntimeError("Release harness not built; run prepare")
+    interference_config = None
+    interference_source = None
+    if cache_interference:
+        from experiments.common.cache_interference import load_config
+        interference_source = CACHE_INTERFERENCE_CONFIG.read_text()
+        interference_config = load_config(CACHE_INTERFERENCE_CONFIG, source=interference_source)
+    if campaign_dir is not None:
+        from experiments.common.cache_interference import verify_mode
+        verify_mode(campaign_dir.resolve(), interference_config,
+                    CACHE_INTERFERER if cache_interference else None)
     service_us = calibration_service_us(data, definition, create=False)
     plan = make_plan(data, service_us)
     if campaign_dir is None:
@@ -526,6 +545,11 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> P
                     binary_sha256=hashlib.sha256(RUST.read_bytes()).hexdigest(),
                     service_time_us=service_us)
         (out / "environment.json").write_text(json.dumps(meta, indent=2) + "\n")
+        if cache_interference:
+            (out / "cache_interference.toml").write_text(interference_source)
+            (out / "cache_interference_identity.json").write_text(json.dumps({
+                "binary_sha256": hashlib.sha256(CACHE_INTERFERER.read_bytes()).hexdigest(),
+            }, indent=2) + "\n")
         db = out / "benchmarks.sqlite3"
         manifest = []
     else:
@@ -537,27 +561,48 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None) -> P
             int(data["repetitions"]["measured_runs_per_block"]),
         )
     db = out / "benchmarks.sqlite3"
+    if cache_interference and len(manifest) == len(plan):
+        from experiments.common.cache_interference import verify_mode
+        verify_mode(out, interference_config, CACHE_INTERFERER, completed=True)
     settling = float(data.get("execution", {}).get("settle_seconds", 3))
     try:
-        for row in plan[len(manifest):]:
-            if settling > 0:
-                time.sleep(settling)
-            print(f"Block {row['block']}, condition {row['configuration']}, "
-                  f"spin={row['spin_us']}, rate={row['arrival_rate']}", flush=True)
-            log = out / "logs" / f"block-{row['block']:02d}-order-{row['order_in_block']:03d}.log"
-            result = subprocess.run(command(data, row, db, campaign), cwd=ROOT,
-                                    capture_output=True, text=True)
-            log.write_text(result.stdout + result.stderr)
-            match = BENCHMARK_ID.search(result.stdout)
-            if result.returncode or not match:
-                raise RuntimeError(f"Benchmark failed; see {log}")
-            manifest.append(dict(**row, experiment_id=int(match.group(1)),
-                                 log=str(log.relative_to(out))))
-            save_csv(out / "manifest.csv", manifest)
+        rows = plan[len(manifest):]
+        supervisor = nullcontext(None)
+        if cache_interference and rows:
+            from experiments.common.cache_interference import CacheInterferer, run_supervised
+            supervisor = CacheInterferer(interference_config, CACHE_INTERFERER, out)
+        with supervisor as interferer:
+            for row in rows:
+                if interferer is not None:
+                    interferer.settle(settling)
+                elif settling > 0:
+                    time.sleep(settling)
+                print(f"Block {row['block']}, condition {row['configuration']}, "
+                      f"spin={row['spin_us']}, rate={row['arrival_rate']}", flush=True)
+                log = out / "logs" / f"block-{row['block']:02d}-order-{row['order_in_block']:03d}.log"
+                if interferer is None:
+                    result = subprocess.run(command(data, row, db, campaign), cwd=ROOT,
+                                            capture_output=True, text=True)
+                    log.write_text(result.stdout + result.stderr)
+                else:
+                    # Keep partial benchmark output across retries as well as
+                    # the interferer's own logs; only the manifest accepts runs.
+                    log = interferer.attempt / ("benchmark-" + log.name)
+                    result = run_supervised(command(data, row, db, campaign), cwd=ROOT,
+                                            check_running=interferer.check_running, log=log)
+                match = BENCHMARK_ID.search(result.stdout)
+                if result.returncode or not match:
+                    raise RuntimeError(f"Benchmark failed; see {log}")
+                record = dict(**row, experiment_id=int(match.group(1)),
+                              log=str(log.relative_to(out)))
+                if interferer is not None:
+                    record["cache_interference_attempt"] = interferer.status["attempt"]
+                manifest.append(record)
+                save_csv(out / "manifest.csv", manifest)
+            verify_campaign_database(out, data, len(plan))
     except BaseException:
         print(f"Partial campaign retained: {out}", file=sys.stderr)
         raise
-    verify_campaign_database(out, data, len(plan))
     print(f"Complete: {out}")
     return out
 
@@ -567,11 +612,13 @@ def main() -> None:
     parser.add_argument("action", choices=("plan", "prepare", "collect", "resume", "analyze"))
     parser.add_argument("--experiment", type=Path, required=True)
     parser.add_argument("--campaign", type=Path)
+    parser.add_argument("--cache-interference", action="store_true",
+                        help="Run cache/memory interference from experiments/studies/cache_interference.toml")
     args = parser.parse_args()
     definition = args.experiment.resolve()
     data = read_definition(definition)
     if args.action == "prepare":
-        prepare(data, definition)
+        prepare(data, definition, cache_interference=args.cache_interference)
     elif args.action == "plan":
         service = calibration_service_us(data, definition, create=False)
         for row in make_plan(data, service):
@@ -579,7 +626,8 @@ def main() -> None:
     elif args.action in ("collect", "resume"):
         if args.action == "resume" and args.campaign is None:
             parser.error("resume requires --campaign")
-        collect(data, definition, args.campaign if args.action == "resume" else None)
+        collect(data, definition, args.campaign if args.action == "resume" else None,
+                cache_interference=args.cache_interference)
     else:
         if args.campaign is None:
             parser.error("analyze requires --campaign")

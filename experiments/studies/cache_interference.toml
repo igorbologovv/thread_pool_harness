@@ -1,0 +1,5 @@
+[cache_interference]
+cpus = [0, 1, 2, 3, 4, 5, 6, 7]
+working_set_mib = 1
+touch_mib = 1
+period_us = 1000

@@ -103,6 +103,58 @@ python3 -m experiments.common.study_run --spec experiments/studies/bls_full.toml
 python3 -m experiments.common.study_run --spec experiments/studies/bls_full.toml --run
 ```
 
+To run the same BLS campaign with the optional CPU-pinned background cache/
+memory interference, add `--cache-interference`:
+
+```bash
+python3 -m experiments.common.study_run --spec experiments/studies/bls_full.toml --run --cache-interference
+```
+
+Its parameters are only read from `experiments/studies/cache_interference.toml`.
+The defaults are eight logical CPUs (0–7), each with its own 1 MiB buffer and
+1 MiB of actual read/modify/write operations per 1000 us period: 8 MiB total
+working set and 8 MiB requested writes per period. CPU IDs must be available
+on the host; failed affinity is a startup failure. Benchmark worker affinity
+is unchanged.
+
+The background process is separate from each benchmark process, is held for
+each complete campaign collection (warmups and all perf passes included), and
+is stopped by the campaign runner on completion, failure, or interruption.
+`READY` requires allocation, prefaulting, affinity, and a completed first sweep
+on every configured CPU. Collection checks process health at most every 50 ms
+while waiting or running a benchmark. On failure it terminates the benchmark
+and its perf descendants, retains diagnostics, and exits unsuccessfully.
+The existing perf PID/TID attachment and benchmark throughput calculations
+exclude the separate interferer process.
+
+For an individual existing BLS definition, use the shared execution engine:
+
+```bash
+python3 -m experiments.common.campaign prepare --experiment experiments/queue_topology/experiment.toml --cache-interference
+python3 -m experiments.common.campaign collect --experiment experiments/queue_topology/experiment.toml --cache-interference
+```
+
+Use a separate output root for baseline and interfered studies. Reuse and
+resume reject changed interference mode or configuration; collection also
+checks the interferer binary hash. Pass the flag again to `resume`. Each
+collection attempt runs one interferer; an explicit resume starts a new one.
+The campaign archives `cache_interference.toml`, binary identity, and a latest
+`cache_interference.json` status. Permanent logs and status files for **every**
+attempt live in `cache_interference/<attempt>/`; manifest rows identify their
+attempt. An abnormal shutdown or missing timing statistics prevents a success
+report, even if all benchmark rows were already written.
+
+Final timing statistics count each thread's sweeps, work exceeding the requested
+period (`overruns`), completion after its scheduled deadline (`deadline_misses`,
+including wakeup lateness), and skipped intervals. Average/max work and wakeup
+lateness are retained. A summary reports whether all sweeps met the work budget.
+The generator skips elapsed intervals instead of overlapping sweeps: 1 ms is a
+requested period, not a real-time guarantee. Forced kills can lose final timing
+statistics and are explicitly marked unsuccessful.
+
+It introduces CPU execution, scheduling, cache, and memory-system contention;
+it is not an L2-eviction-only measurement.
+
 `--check` does not build, prepare or collect benchmarks. `--run` expands
 the matrix and executes each campaign sequentially: release build, dataset
 preparation, collection, per-campaign paired analysis, then one study-wide
