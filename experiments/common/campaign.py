@@ -24,6 +24,7 @@ BENCHMARK_ID = re.compile(r"Stored benchmark: session=\d+ experiment=(\d+) datab
 RUST = ROOT / "target/release/threadance-harness"
 CACHE_INTERFERER = ROOT / "target/release/cache_interferer"
 CACHE_INTERFERENCE_CONFIG = ROOT / "experiments/studies/cache_interference.toml"
+CPU_AFFINITY_CONFIG = ROOT / "experiments/studies/cpu_affinity.toml"
 DELIVERY_FLAGS = {
     "all-at-once", "fixed-arrivals", "steady-arrivals",
     "variable-arrivals", "bursty-arrivals",
@@ -224,7 +225,33 @@ def make_plan(data: dict, service_us: float | None) -> list[dict]:
     return records
 
 
-def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
+def read_affinity_config(workers: int) -> tuple[list[int], int]:
+    """Validate the explicit worker CPU order and producer CPU."""
+    raw = tomllib.loads(CPU_AFFINITY_CONFIG.read_text())
+    config = raw.get("affinity")
+    if not isinstance(config, dict) or set(config) != {"worker_cpus", "producer_cpu"}:
+        raise ValueError("CPU affinity config requires [affinity] worker_cpus and producer_cpu")
+    cpus = config["worker_cpus"]
+    producer = config["producer_cpu"]
+    if (not isinstance(cpus, list) or len(cpus) < workers
+            or any(type(cpu) is not int or not 0 <= cpu < 1024 for cpu in cpus)
+            or len(set(cpus)) != len(cpus)
+            or type(producer) is not int or not 0 <= producer < 1024):
+        raise ValueError("Invalid CPU affinity list, CPU IDs, or producer CPU")
+    return cpus[:workers], producer
+
+
+def verify_affinity_mode(folder: Path, enabled: bool) -> None:
+    """Never resume pinned data as unpinned, or vice versa."""
+    archive = folder / "cpu_affinity.toml"
+    if archive.exists() != enabled:
+        raise ValueError("CPU affinity mode differs from original campaign; use a separate output root")
+    if enabled and archive.read_bytes() != CPU_AFFINITY_CONFIG.read_bytes():
+        raise ValueError("Archived CPU affinity config differs from requested configuration")
+
+
+def command(data: dict, row: dict, database: Path, campaign: str,
+            *, affinity: tuple[list[int], int] | None = None) -> list[str]:
     w, r, d = data["workload"], data["repetitions"], data["delivery"]
     args = [str(RUST),
             "--workload", data["experiment"]["workload"],
@@ -241,6 +268,10 @@ def command(data: dict, row: dict, database: Path, campaign: str) -> list[str]:
             "--profile", data["experiment"]["profile"],
             "--campaign-id", campaign,
             "--database", str(database.resolve())]
+    if affinity is not None:
+        worker_cpus, producer_cpu = affinity
+        args += ["--worker-cpus", ",".join(map(str, worker_cpus)),
+                 "--producer-cpu", str(producer_cpu)]
     if data.get("perf", {}).get("passes"):
         args += ["--perf-passes-json", json.dumps(data["perf"]["passes"], separators=(",", ":"))]
         if int(row["block"]) % 2 == 0:
@@ -485,12 +516,13 @@ def verify_campaign_database(folder: Path, data: dict, expected_invocations: int
         )
 
 def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
-            *, cache_interference: bool = False) -> Path:
+            *, cache_interference: bool = False, pin_workers: bool = False) -> Path:
     os.chdir(ROOT)
     if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
         raise RuntimeError("Tracked tree is dirty; commit before collecting data")
     if not RUST.is_file():
         raise RuntimeError("Release harness not built; run prepare")
+    affinity = read_affinity_config(int(data["workload"]["workers"])) if pin_workers else None
     interference_config = None
     interference_source = None
     if cache_interference:
@@ -498,6 +530,7 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
         interference_source = CACHE_INTERFERENCE_CONFIG.read_text()
         interference_config = load_config(CACHE_INTERFERENCE_CONFIG, source=interference_source)
     if campaign_dir is not None:
+        verify_affinity_mode(campaign_dir.resolve(), pin_workers)
         from experiments.common.cache_interference import verify_mode
         verify_mode(campaign_dir.resolve(), interference_config,
                     CACHE_INTERFERER if cache_interference else None)
@@ -545,6 +578,8 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
                     binary_sha256=hashlib.sha256(RUST.read_bytes()).hexdigest(),
                     service_time_us=service_us)
         (out / "environment.json").write_text(json.dumps(meta, indent=2) + "\n")
+        if pin_workers:
+            shutil.copy2(CPU_AFFINITY_CONFIG, out / "cpu_affinity.toml")
         if cache_interference:
             (out / "cache_interference.toml").write_text(interference_source)
             (out / "cache_interference_identity.json").write_text(json.dumps({
@@ -581,14 +616,14 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
                       f"spin={row['spin_us']}, rate={row['arrival_rate']}", flush=True)
                 log = out / "logs" / f"block-{row['block']:02d}-order-{row['order_in_block']:03d}.log"
                 if interferer is None:
-                    result = subprocess.run(command(data, row, db, campaign), cwd=ROOT,
+                    result = subprocess.run(command(data, row, db, campaign, affinity=affinity), cwd=ROOT,
                                             capture_output=True, text=True)
                     log.write_text(result.stdout + result.stderr)
                 else:
                     # Keep partial benchmark output across retries as well as
                     # the interferer's own logs; only the manifest accepts runs.
                     log = interferer.attempt / ("benchmark-" + log.name)
-                    result = run_supervised(command(data, row, db, campaign), cwd=ROOT,
+                    result = run_supervised(command(data, row, db, campaign, affinity=affinity), cwd=ROOT,
                                             check_running=interferer.check_running, log=log)
                 match = BENCHMARK_ID.search(result.stdout)
                 if result.returncode or not match:
@@ -612,6 +647,8 @@ def main() -> None:
     parser.add_argument("action", choices=("plan", "prepare", "collect", "resume", "analyze"))
     parser.add_argument("--experiment", type=Path, required=True)
     parser.add_argument("--campaign", type=Path)
+    parser.add_argument("--pin-workers", action="store_true",
+                        help="Pin workers and producer from experiments/studies/cpu_affinity.toml")
     parser.add_argument("--cache-interference", action="store_true",
                         help="Run cache/memory interference from experiments/studies/cache_interference.toml")
     args = parser.parse_args()
@@ -627,7 +664,7 @@ def main() -> None:
         if args.action == "resume" and args.campaign is None:
             parser.error("resume requires --campaign")
         collect(data, definition, args.campaign if args.action == "resume" else None,
-                cache_interference=args.cache_interference)
+                cache_interference=args.cache_interference, pin_workers=args.pin_workers)
     else:
         if args.campaign is None:
             parser.error("analyze requires --campaign")
