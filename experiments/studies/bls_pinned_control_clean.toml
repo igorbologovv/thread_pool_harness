@@ -1,0 +1,20 @@
+# Paired BLS hardware-control study, arm: clean.
+# Always run with --pin-workers; use --cache-interference only for the interference arm.
+# The two studies intentionally share the same workload, PRNG seed and plan order.
+[study]
+name = "bls-pinned-control-clean"
+template = "experiments/studies/bls_pinned_control_template.toml"
+output_dir = "experiments/generated/bls-pinned-control-clean"
+output_root = "results/studies/bls-pinned-control-clean/campaigns"
+max_invocations = 3000
+
+[axes]
+workers = [2, 4, 8, 16]
+delivery_modes = ["all-at-once", "fixed-arrivals", "bursty-arrivals"]
+
+[overrides]
+profile = "deep"
+blocks = 20
+warmup_runs_per_block = 4
+measured_runs_per_block = 2
+settle_seconds = 0.0

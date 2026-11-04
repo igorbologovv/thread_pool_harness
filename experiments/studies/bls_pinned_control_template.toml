@@ -1,0 +1,115 @@
+[experiment]
+name = "bls-pinned-control-template"
+workload = "bls-aggregate-verify"
+profile = "deep"
+
+[workload]
+workers = 4
+work_units = 2500
+dataset_work_units = 2500
+validators = 2000
+signers_per_certificate = 1600
+certificates_per_work_unit = 1
+workload_seed = 1
+queue_capacity = 64
+
+[delivery]
+mode = "all-at-once"
+arrival_rates = [900.0, 1500.0]
+arrival_seed_base = 42
+
+[repetitions]
+blocks = 20
+warmup_runs_per_block = 4
+measured_runs_per_block = 2
+
+[randomization]
+seed = 20261101
+
+[execution]
+settle_seconds = 0.0
+
+[analysis]
+reference_configuration = "rayon"
+bootstrap_replicates = 10000
+bootstrap_seed = 20261101
+
+[artifacts]
+dataset_cache_dir = "results/datasets"
+output_root = "results/studies/bls-pinned-control-template/campaigns"
+
+[[configurations]]
+id = "rayon"
+scheduler = "rayon"
+
+[[configurations]]
+id = "bevy"
+scheduler = "bevy"
+
+[[configurations]]
+id = "mpmc-sp0"
+scheduler = "threadance"
+queue_capacity = 64
+wait_policy = "spin-then-park"
+spin_us = 0
+
+[[configurations]]
+id = "mpmc-ab"
+scheduler = "threadance"
+queue_capacity = 64
+wait_policy = "agave-backoff"
+spin_us = 0
+
+[[configurations]]
+id = "rtrb-sp0-b1"
+scheduler = "threadance-hot-first-rtrb"
+queue_capacity = 64
+hot_first_backlog = 1
+wait_policy = "spin-then-park"
+spin_us = 0
+
+[[configurations]]
+id = "rtrb-sp0-b2"
+scheduler = "threadance-hot-first-rtrb"
+queue_capacity = 64
+hot_first_backlog = 2
+wait_policy = "spin-then-park"
+spin_us = 0
+
+# Additional MPMC control for CPU contention under background interference.
+[[configurations]]
+id = "mpmc-sp40"
+scheduler = "threadance"
+queue_capacity = 64
+wait_policy = "spin-then-park"
+spin_us = 40
+
+# The same two PMU event groups as bls_advanced_perf.toml.
+# Each group gets exactly 2 measured runs; four warmups occur once before both groups.
+[[perf.passes]]
+name = "cpu-cache"
+events = [
+    "cycles:uk",
+    "instructions:uk",
+    "cache-references:uk",
+    "cache-misses:uk",
+    "L1-dcache-load-misses:uk",
+    "task-clock",
+    "context-switches",
+    "cpu-migrations",
+    "page-faults",
+]
+
+[[perf.passes]]
+name = "l1-branches"
+events = [
+    "cycles:uk",
+    "L1-dcache-loads:uk",
+    "L1-dcache-load-misses:uk",
+    "branches:uk",
+    "branch-misses:uk",
+    "task-clock",
+    "context-switches",
+    "cpu-migrations",
+    "page-faults",
+]
