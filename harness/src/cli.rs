@@ -31,6 +31,15 @@ pub struct Cli {
     #[arg(long)]
     pub workers: NonZeroUsize,
 
+    /// Optional ordered Linux CPU list/ranges for worker 0..N-1 (e.g. 0-7,8-15).
+    /// Without this flag workers remain unpinned.
+    #[arg(long)]
+    pub worker_cpus: Option<String>,
+
+    /// Optional Linux CPU ID for the benchmark producer/pacer (main) thread.
+    #[arg(long)]
+    pub producer_cpu: Option<usize>,
+
     /// Capacity of the Threadance task queue.
     #[arg(long, default_value = "1024")]
     pub queue_capacity: NonZeroUsize,

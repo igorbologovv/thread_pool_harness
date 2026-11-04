@@ -171,6 +171,25 @@ comparisons. Full-study run count is 8,800 invocations (20 blocks).
 Check disk space, profiling access, and machine stability before the full run.
 
 
+## Optional benchmark worker/producer CPU affinity
+
+Use `--pin-workers` with `campaign collect` or `study_run --run`. Settings
+come from `experiments/studies/cpu_affinity.toml`. Each worker is pinned to
+its corresponding logical CPU, in the configured order; the main harness
+thread (producer and arrival pacer) is pinned to `producer_cpu`. The
+Linux affinity masks are checked before warmups and measurements start.
+This covers Rayon, Bevy, Threadance MPMC and both segmented implementations.
+
+The example selects logical CPUs 0..15 in order, using only the first
+`workers` entries. The producer is placed on CPU15. With 16 workers, CPU15
+is also assigned to worker 15, and a warning is emitted: the machine has
+no seventeenth logical CPU. SMT siblings share physical resources, too.
+Inspect `lscpu -e=CPU,CORE,SOCKET,ONLINE` to confirm your topology.
+
+Pinned and unpinned experiments require separate campaign output roots; the
+TOML config is archived and checked on resume. The background cache
+interferer uses its own CPU pinning independently. Both flags can be combined.
+
 ## Advanced BLS PMU acquisition (second round)
 
 Specification: `experiments/studies/bls_advanced_perf.toml` (separate from

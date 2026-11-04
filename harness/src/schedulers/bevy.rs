@@ -17,7 +17,7 @@ impl BevyScheduler {
     pub fn new(workers: NonZeroUsize) -> Self {
         let pool = TaskPoolBuilder::new()
             .num_threads(workers.get())
-            .thread_name("bevy-compute".to_string())
+            .thread_name("bevy".to_string())
             .build();
 
         debug_assert_eq!(pool.thread_num(), workers.get());

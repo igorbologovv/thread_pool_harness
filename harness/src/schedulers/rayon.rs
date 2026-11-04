@@ -17,6 +17,7 @@ impl RayonScheduler {
     pub fn new(workers: NonZeroUsize) -> Result<Self, ThreadPoolBuildError> {
         let pool = ThreadPoolBuilder::new()
             .num_threads(workers.get())
+            .thread_name(|index| format!("rayon-{index}"))
             .build()?;
 
         Ok(Self { pool })
