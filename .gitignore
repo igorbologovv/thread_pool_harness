@@ -28,3 +28,12 @@ results/calibrations/
 
 # Generated workload dataset cache
 /results/datasets/
+
+# Reproducible local statistical environment
+/.venv-analysis/
+/analysis/bls_cpu_time/output/results/results.json
+
+# Generated benchmark analysis results
+/analysis/bls_throughput/output/
+/analysis/bls_cpu_time/output/
+/analysis/bls_throughput/extracted/
