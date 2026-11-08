@@ -1,0 +1,18 @@
+# Independent 2500-WU finite-batch Rayon reference for each worker count.
+[study]
+name = "bls-worker-cubic-capacity"
+template = "experiments/studies/bls_saturation_recheck_template.toml"
+output_dir = "experiments/generated/bls-worker-cubic-capacity"
+output_root = "results/studies/bls-worker-cubic-holdout/capacity/campaigns"
+max_invocations = 500
+
+[axes]
+workers = [2, 4, 6, 8, 10, 12, 16]
+schedulers = ["rayon"]
+
+[overrides]
+blocks = 30
+warmup_runs_per_block = 4
+measured_runs_per_block = 3
+profile = "standard"
+settle_seconds = 0.0
