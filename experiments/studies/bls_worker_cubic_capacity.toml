@@ -1,4 +1,4 @@
-# Independent 2500-WU finite-batch Rayon reference for each worker count.
+# Calibrate only 6/10/12; reuse archived 2/4/8/16 saturation rechecks.
 [study]
 name = "bls-worker-cubic-capacity"
 template = "experiments/studies/bls_saturation_recheck_template.toml"
@@ -7,7 +7,7 @@ output_root = "results/studies/bls-worker-cubic-holdout/capacity/campaigns"
 max_invocations = 500
 
 [axes]
-workers = [2, 4, 6, 8, 10, 12, 16]
+workers = [6, 10, 12]
 schedulers = ["rayon"]
 
 [overrides]
