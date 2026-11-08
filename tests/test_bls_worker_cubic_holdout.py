@@ -3,7 +3,7 @@ import unittest
 
 from experiments.common.campaign import make_plan
 from experiments.studies.run_bls_worker_cubic_holdout import (
-    BLOCKS, MODES, SCHEDULERS, WORKERS, WORK_UNITS, definitions,
+    BLOCKS, MODES, SCHEDULERS, WORKERS, NEW_WORKERS, MIN_WINDOW_SECONDS, definitions,
 )
 import tomllib
 
@@ -15,14 +15,15 @@ class WorkerCubicHoldoutStudyTest(unittest.TestCase):
 
     def test_all_seven_worker_counts_and_modes(self):
         entries = definitions(self.reference)
-        self.assertEqual(len(entries), 14)
+        self.assertEqual(len(entries), 6)
         self.assertEqual({(e['workers'], e['mode']) for e, _, _ in entries},
-                         {(w, m) for w in WORKERS for m in MODES})
-        self.assertEqual(sum(e['invocations'] for e, _, _ in entries), 3360)
+                         {(w, m) for w in NEW_WORKERS for m in MODES})
+        self.assertEqual(sum(e['invocations'] for e, _, _ in entries), 1440)
         for entry, _, serialized in entries:
             data = tomllib.loads(serialized)
             self.assertEqual(data['workload']['workers'], entry['workers'])
-            self.assertEqual(data['workload']['work_units'], WORK_UNITS)
+            self.assertEqual(data['workload']['work_units'],
+                             __import__('math').ceil(MIN_WINDOW_SECONDS * entry['offered_rate']) + 1)
             self.assertEqual(data['workload']['dataset_work_units'], 2500)
             self.assertEqual(data['experiment']['profile'], 'deep')
             self.assertEqual(data['repetitions']['blocks'], BLOCKS)
@@ -33,15 +34,15 @@ class WorkerCubicHoldoutStudyTest(unittest.TestCase):
                              ['cpu-cache', 'l1-branches'])
             self.assertAlmostEqual(data['delivery']['arrival_rates'][0],
                                    self.reference[entry['workers']] / 2)
-            self.assertGreaterEqual((WORK_UNITS-1)/entry['offered_rate'], 0.2)
+            self.assertGreaterEqual((data['workload']['work_units']-1)/entry['offered_rate'], MIN_WINDOW_SECONDS)
             self.assertEqual(len(make_plan(data, None)), 240)
 
     def test_incomplete_and_implausible_rates_rejected(self):
         missing = {w: v for w, v in self.reference.items() if w != 12}
         with self.assertRaises(ValueError):
             definitions(missing)
-        overfast = dict(self.reference, **{})
-        overfast[16] = 12000.0
+        overfast = dict(self.reference)
+        overfast[12] = 30000.0
         with self.assertRaises(ValueError):
             definitions(overfast)
 
