@@ -1,9 +1,9 @@
 # Calibrate only 6/10/12; reuse archived 2/4/8/16 saturation rechecks.
 [study]
-name = "bls-worker-cubic-capacity"
+name = "bls-worker-cubic-capacity-200ms"
 template = "experiments/studies/bls_saturation_recheck_template.toml"
-output_dir = "experiments/generated/bls-worker-cubic-capacity"
-output_root = "results/studies/bls-worker-cubic-holdout/capacity/campaigns"
+output_dir = "experiments/generated/bls-worker-cubic-capacity-200ms"
+output_root = "results/studies/bls-worker-cubic-holdout-200ms/capacity/campaigns"
 max_invocations = 500
 
 [axes]
