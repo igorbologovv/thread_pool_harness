@@ -1,4 +1,4 @@
-# BLS CPU time versus worker count: independent cubic-model holdouts
+# BLS CPU time versus worker count: 200-ms independent cubic-model holdouts
 
 ## Research question
 
@@ -13,7 +13,7 @@ preserves at least 200 ms of scheduled arrivals as workers and offered rates inc
 **reuses the original 2/4/8/16 training observations**, acquires new held-out
 6/10/12 observations with the same sizing rule, and preserves the old data.
 
-## Acquisition design
+The earlier 1024-WU campaign is separate and left untouched. All new data and\ncalibration artifacts go to `results/studies/bls-worker-cubic-holdout-200ms/`,\nwith generated TOMLs under `experiments/generated/bls-worker-cubic-holdout-200ms/`.\n\n## Acquisition design
 
 | Parameter | Value |
 |---|---|
