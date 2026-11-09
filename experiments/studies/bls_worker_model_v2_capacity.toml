@@ -1,0 +1,18 @@
+# Only missing saturation rates for the independent v2 validation workers.
+[study]
+name = "bls-worker-v2-capacity"
+template = "experiments/studies/bls_saturation_recheck_template.toml"
+output_dir = "experiments/generated/bls-worker-v2-capacity"
+output_root = "results/studies/bls-worker-model-v2/capacity/campaigns"
+max_invocations = 500
+
+[axes]
+workers = [3, 7, 9, 11, 14]
+schedulers = ["rayon"]
+
+[overrides]
+blocks = 30
+warmup_runs_per_block = 4
+measured_runs_per_block = 3
+profile = "standard"
+settle_seconds = 0.0
