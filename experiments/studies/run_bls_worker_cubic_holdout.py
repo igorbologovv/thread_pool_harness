@@ -28,7 +28,7 @@ from experiments.common.study_run import command, completed, existing_campaign
 from experiments.studies.bls_worker_cubic_model import evaluate_holdouts
 from experiments.studies.run_bls_normalized_deep_final import audit_perf_captures
 
-STUDY = "bls-worker-cubic-holdout"
+STUDY = "bls-worker-cubic-holdout-200ms"
 ROOT_DIR = ROOT / "results/studies" / STUDY
 CAPACITY_SPEC = ROOT / "experiments/studies/bls_worker_cubic_capacity.toml"
 CAPACITY_OUTPUT = ROOT_DIR / "capacity/campaigns"
@@ -101,7 +101,7 @@ def calibrate_capacity() -> dict:
     report = design(CAPACITY_SPEC, write=True)
     if len(report["campaigns"]) != len(NEW_WORKERS):
         raise RuntimeError("Expected three missing-worker saturation campaigns")
-    generated = ROOT / "experiments/generated/bls-worker-cubic-capacity"
+    generated = ROOT / "experiments/generated/bls-worker-cubic-capacity-200ms"
     CAPACITY_OUTPUT.mkdir(parents=True, exist_ok=True)
     with (CAPACITY_OUTPUT / ".study-run.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -131,7 +131,7 @@ def calibrate_capacity() -> dict:
         )
     for workers in NEW_WORKERS:
         rates[str(workers)] = _read_ray_saturation(
-            CAPACITY_OUTPUT, workers, "bls-worker-cubic-capacity"
+            CAPACITY_OUTPUT, workers, "bls-worker-cubic-capacity-200ms"
         )
     record = {
         "git_commit": commit_sha(),
