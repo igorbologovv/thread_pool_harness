@@ -10,6 +10,7 @@ mod summary;
 mod workload;
 
 use std::{
+    num::NonZeroUsize,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
