@@ -13,7 +13,7 @@ All five policies instantiate Threadance with `CrossbeamMpmc` (queue capacity 64
 
 Do not interpret `AgaveBackoff` as a duration on the SpinThenPark axis.
 
-Worker counts can be selected from 2, 4, 6, 8, 10, 12, 14, 16; the **default plan includes all eight worker counts**. Both BLS aggregate verification and `compute-heavy` (8×8 matrix multiplications, by default **4096 operations per WU**) are supported. This study uses a separate **4096-pair immutable input pool (~4 MiB)** that is reused across work units, unlike the legacy unique-input streaming workload. Treat the two compute implementations as different memory/cache regimes. Fixed and Weibull bursty (shape 0.5) arrivals are separate campaigns.
+Worker counts can be selected from 2, 4, 6, 8, 10, 12, 14, 16; the **default plan includes all eight worker counts**. Both BLS aggregate verification and `compute-heavy` (8×8 matrix multiplications, by default **16384 operations per WU**) are supported. This study uses a separate **4096-pair immutable input pool (~4 MiB)** that is reused across work units, unlike the legacy unique-input streaming workload. Treat the two compute implementations as different memory/cache regimes. Fixed and Weibull bursty (shape 0.5) arrivals are separate campaigns.
 
 Load grid: **25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90, 95%**. The 5% grid is retained through the existing transition region; 10% steps at higher load save time. A calibrated saturated throughput for the *same workload and worker count* sets the offered-rate denominator; the denominator does **not** change between wait policies. Offered load is an arrival-rate design variable, not measured CPU utilization.
 
@@ -32,11 +32,11 @@ Load grid: **25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90, 95%**. The 5% grid is r
 
 In the legacy workload every individual matrix multiplication used a separate 1-KiB input pair. At 256 operations/WU and ~130k WU/s, a 200-ms window would require roughly 6 GiB and ~8-microsecond arrival intervals. This is not a viable wait/wake-policy experiment under the existing pacer.
 
-The **new study variant explicitly sets** `compute_input_pairs=4096`. Its `operations_per_work_unit=4096` produces the same amount of mathematical computation per work unit across all policies, while cyclically reusing a bounded immutable input array of ~4 MiB. This preserves the legacy behavior when the `--compute-input-pairs` argument is absent in other experiments. The bounded variant has different cache behavior, so **never pool its measurements with the old streaming compute-heavy workload**.
+The **new study variant explicitly sets** `compute_input_pairs=4096`. Its `operations_per_work_unit=16384` produces the same amount of mathematical computation per work unit across all policies, while cyclically reusing a bounded immutable input array of ~4 MiB. This preserves the legacy behavior when the `--compute-input-pairs` argument is absent in other experiments. The bounded variant has different cache behavior, so **never pool its measurements with the old streaming compute-heavy workload**.
 
 The study rejects a compute reference whose maximum offered rate exceeds 10,000 WU/s (mean interval <100 µs) rather than silently accepting unreliable short sleeps. This is an initial pacer-safety threshold, not proof of negligible lateness. The actual submission-lateness distribution must still be inspected after collection. If the check fails, increase `--ops-per-wu`, recalibrate, and run with the same setting.
 
-Old calibration files remain untouched. New calibrations are stored in a **Git-revision-specific subdirectory** to avoid mixing datasets and binaries across code changes; both BLS and bounded compute-heavy must be recalibrated after changing HEAD. Calibration is performed outside the measurement campaigns.
+The saturated compute-heavy calibration uses 512 work units per run (rather than 2500 for BLS), with 4 warmups and 12 measured repeats. This reduces calibration time while keeping sufficient units to estimate a saturated reference; validate the stability of its measured rates. Old calibration files remain untouched. New calibrations are stored in a **Git-revision-specific subdirectory** to avoid mixing datasets and binaries across code changes; both BLS and bounded compute-heavy must be recalibrated after changing HEAD. Calibration is performed outside the measurement campaigns.
 
 ## Commands
 
