@@ -152,7 +152,10 @@ mod bounded_tests {
 
     #[test]
     fn bounded_inputs_keep_work_units_but_cap_allocations() {
-        let common = CommonWorkloadConfig { work_units: 9, seed: 1 };
+        let common = CommonWorkloadConfig {
+            work_units: 9,
+            seed: 1,
+        };
         let config = ComputeHeavyConfig {
             operations_per_work_unit: 7,
             input_pair_limit: Some(5),
