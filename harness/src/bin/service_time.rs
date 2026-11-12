@@ -27,6 +27,9 @@ struct Cli {
     #[arg(long)]
     operations_per_work_unit: Option<usize>,
 
+    #[arg(long)]
+    compute_input_pairs: Option<usize>,
+
     #[arg(long, default_value_t = 100)]
     work_units: usize,
 
@@ -138,6 +141,7 @@ fn main() {
                 &common,
                 &ComputeHeavyConfig {
                     operations_per_work_unit: ops,
+                    input_pair_limit: cli.compute_input_pairs,
                 },
             );
             measure(&workload, cli.warmup, cli.runs)
