@@ -76,6 +76,7 @@ fn main() {
 
             let workload_config = ComputeHeavyConfig {
                 operations_per_work_unit: operations_per_work_unit.get(),
+                input_pair_limit: cli.compute_input_pairs.map(NonZeroUsize::get),
             };
 
             let workload = Arc::new(ComputeHeavyWorkload::generate(
