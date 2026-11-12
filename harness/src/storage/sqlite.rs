@@ -409,7 +409,7 @@ impl BenchmarkDb {
                     .unwrap_or("none");
 
                 let pass_run_index = match cli.profile {
-                    ProfileMode::Deep => run_index % cli.runs.get(),
+                    ProfileMode::Deep => run_index % cli.runs,
 
                     ProfileMode::None | ProfileMode::Standard => run_index,
                 };
