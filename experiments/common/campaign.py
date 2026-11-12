@@ -278,6 +278,8 @@ def command(data: dict, row: dict, database: Path, campaign: str,
             args.append("--reverse-perf-passes")
     if data["experiment"]["workload"] == "compute-heavy":
         args += ["--operations-per-work-unit", str(w["operations_per_work_unit"])]
+        if w.get("compute_input_pairs") is not None:
+            args += ["--compute-input-pairs", str(w["compute_input_pairs"])]
     else:
         for key in ("validators", "signers_per_certificate", "certificates_per_work_unit"):
             args += ["--" + key.replace("_", "-"), str(w[key])]
