@@ -53,6 +53,7 @@ BLOCKS = 40
 WARMUPS = 4
 REPEATS = 2
 CALIBRATION_WU = 2500
+COMPUTE_CALIBRATION_WU = 512
 CALIBRATION_RUNS = 12
 SEED = 20261112
 COMPUTE_INPUT_PAIRS = 4096
@@ -147,11 +148,13 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
     if db.exists():
         raise RuntimeError(f"Orphaned calibration DB {db}; inspect before retrying")
 
+    calibration_wu = (COMPUTE_CALIBRATION_WU
+                      if workload == "compute-heavy" else CALIBRATION_WU)
     args = [
         str(RUST), "--workload", workload, "--scheduler", "threadance",
         "--threadance-wait-policy", "spin-then-park", "--threadance-spin-us", "0",
         "--workers", str(workers), "--queue-capacity", "64",
-        "--work-units", str(CALIBRATION_WU),
+        "--work-units", str(calibration_wu),
         "--seed", "1", "--warmup", str(WARMUPS), "--runs", str(CALIBRATION_RUNS),
         "--all-at-once", "--profile", "none", "--database", str(db),
         "--campaign-id", f"{NAME}-reference-{label(workload, ops)}-w{workers}",
@@ -179,7 +182,7 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
         "workload": workload, "workers": workers,
         "operations_per_work_unit": ops if workload == "compute-heavy" else None,
         "compute_input_pairs": COMPUTE_INPUT_PAIRS if workload == "compute-heavy" else None,
-        "calibration_work_units": CALIBRATION_WU,
+        "calibration_work_units": calibration_wu,
         "calibration_policy": "CrossbeamMpmc / SpinThenPark(0)",
         "calibration_warmups": WARMUPS, "calibration_measured_runs": CALIBRATION_RUNS,
         "reference_wu_s": statistics.median(rates),
@@ -373,7 +376,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, nargs="+", default=list(DEFAULT_WORKERS))
     parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=list(WORKLOADS))
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
-    parser.add_argument("--ops-per-wu", type=int, default=4096)
+    parser.add_argument("--ops-per-wu", type=int, default=16384)
     parser.add_argument("--target-window-ms", type=int, default=200)
     parser.add_argument("--max-compute-mib", type=int, default=1024)
     parser.add_argument("--budget-hours", type=float, default=0,
