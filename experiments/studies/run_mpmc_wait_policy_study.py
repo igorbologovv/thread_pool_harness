@@ -5,9 +5,9 @@ then compare five MPMC wait policies under fixed and Weibull-bursty arrivals.
 Only one task-delivery mechanism (CrossbeamMpmc) is used.
 
 Run from the repository root:
-  python3 -m experiments.studies.run_mpmc_wait_policy_study --check --workers 2 8
-  python3 -m experiments.studies.run_mpmc_wait_policy_study --calibrate --workers 2 8
-  python3 -m experiments.studies.run_mpmc_wait_policy_study --run --workers 2 8 --budget-hours 11
+  python3 -m experiments.studies.run_mpmc_wait_policy_study --calibrate
+  python3 -m experiments.studies.run_mpmc_wait_policy_study --check
+  python3 -m experiments.studies.run_mpmc_wait_policy_study --run
 
 An interrupted campaign is resumed using its archived TOML/manifest/SQLite.
 Do not change Git revision, release binary, or study settings mid-campaign.
@@ -55,6 +55,8 @@ REPEATS = 2
 CALIBRATION_WU = 2500
 CALIBRATION_RUNS = 12
 SEED = 20261112
+COMPUTE_INPUT_PAIRS = 4096
+MAX_PACED_RATE_WU_S = 10000.0
 
 # Each compute-heavy operation stores two 8x8 f64 matrices (2*8*8*8 bytes).
 # Every work unit owns distinct operations in the current workload implementation.
@@ -76,12 +78,12 @@ def label(workload: str, ops: int) -> str:
     if workload == "bls-aggregate-verify":
         return "bls"
     if workload == "compute-heavy":
-        return f"compute-ops{ops}"
+        return f"compute-ops{ops}-pairs{COMPUTE_INPUT_PAIRS}"
     raise ValueError(f"Unknown workload {workload}")
 
 
 def calibration_file(workload: str, workers: int, ops: int) -> Path:
-    return CALIBRATIONS / f"{label(workload, ops)}-w{workers}.json"
+    return CALIBRATIONS / git_revision()[:12] / f"{label(workload, ops)}-w{workers}.json"
 
 
 def git_revision() -> str:
@@ -126,6 +128,7 @@ def load_reference(workload: str, workers: int, ops: int) -> dict:
     required = {
         "workload": workload, "workers": workers,
         "operations_per_work_unit": ops if workload == "compute-heavy" else None,
+        "compute_input_pairs": COMPUTE_INPUT_PAIRS if workload == "compute-heavy" else None,
         "git_commit": git_revision(), "binary_sha256": release_hash(),
     }
     if any(record.get(key) != value for key, value in required.items()):
@@ -139,7 +142,7 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
     path = calibration_file(workload, workers, ops)
     if path.exists():
         return load_reference(workload, workers, ops)
-    CALIBRATIONS.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     db = path.with_suffix(".sqlite3")
     if db.exists():
         raise RuntimeError(f"Orphaned calibration DB {db}; inspect before retrying")
@@ -154,7 +157,8 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
         "--campaign-id", f"{NAME}-reference-{label(workload, ops)}-w{workers}",
     ]
     if workload == "compute-heavy":
-        args += ["--operations-per-work-unit", str(ops)]
+        args += ["--operations-per-work-unit", str(ops),
+                 "--compute-input-pairs", str(COMPUTE_INPUT_PAIRS)]
     else:
         args += [
             "--dataset-work-units", str(CALIBRATION_WU),
@@ -174,6 +178,7 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
     record = {
         "workload": workload, "workers": workers,
         "operations_per_work_unit": ops if workload == "compute-heavy" else None,
+        "compute_input_pairs": COMPUTE_INPUT_PAIRS if workload == "compute-heavy" else None,
         "calibration_work_units": CALIBRATION_WU,
         "calibration_policy": "CrossbeamMpmc / SpinThenPark(0)",
         "calibration_warmups": WARMUPS, "calibration_measured_runs": CALIBRATION_RUNS,
@@ -188,20 +193,20 @@ def calibrate_one(workload: str, workers: int, ops: int) -> dict:
 
 def window_seconds(reference: float, ops: int, max_data_mib: int,
                    target_window_ms: int) -> float:
-    """Use up to 200 ms, shrinking only to prevent excessive compute-heavy RAM."""
-    max_units = (max_data_mib * 1024 * 1024) // (ops * BYTES_PER_OPERATION)
-    if max_units < 2:
-        raise ValueError("Compute-heavy memory cap allows fewer than 2 work units")
-    top_rate = reference * max(LOADS) / 100.0
-    safe_seconds = (max_units - 2) / top_rate
-    actual_ms = min(target_window_ms, int(safe_seconds * 1000))
-    if actual_ms < 100:
+    """Fixed window with explicit bounded-input memory and pacing guards."""
+    del ops
+    footprint = COMPUTE_INPUT_PAIRS * BYTES_PER_OPERATION
+    if footprint > max_data_mib * 1024 * 1024:
         raise ValueError(
-            f"Compute-heavy requires a {actual_ms}-ms window at most under "
-            f"{max_data_mib} MiB; increase --max-compute-mib or choose a "
-            "different compute workload granularity before overnight collection"
+            f"Compute-heavy input pool requires {footprint / 1048576:.1f} MiB; "
+            f"configured cap is {max_data_mib} MiB"
         )
-    return actual_ms / 1000.0
+    if reference * max(LOADS) / 100 > MAX_PACED_RATE_WU_S:
+        raise ValueError(
+            f"Compute-heavy would emit >{MAX_PACED_RATE_WU_S:.0f} WU/s; "
+            "increase --ops-per-wu and recalibrate to avoid unreliable short sleeps"
+        )
+    return target_window_ms / 1000.0
 
 
 def points(workload: str, workers: int, ops: int,
@@ -215,15 +220,10 @@ def points(workload: str, workers: int, ops: int,
         units = math.ceil(duration * rate) + 1
         if workload == "bls-aggregate-verify" and units > CALIBRATION_WU:
             raise ValueError(f"BLS dataset too small at {workers} workers / {pct}%")
-        if workload == "compute-heavy" and (
-            units * ops * BYTES_PER_OPERATION > max_data_mib * 1024 * 1024
-        ):
-            raise ValueError("Compute-heavy campaign would exceed its memory cap")
         if units < 2 or (units - 1) / rate < duration - 1e-9:
             raise ValueError("Invalid paced schedule")
         out.append((pct, units, rate, (units - 1) / rate))
     return out
-
 
 def definition(workload: str, workers: int, mode: str, pct: int,
                ops: int, target_window_ms: int, max_data_mib: int):
@@ -243,6 +243,7 @@ def definition(workload: str, workers: int, mode: str, pct: int,
     }
     if workload == "compute-heavy":
         data["workload"]["operations_per_work_unit"] = ops
+        data["workload"]["compute_input_pairs"] = COMPUTE_INPUT_PAIRS
     else:
         data["workload"].update(
             dataset_work_units=CALIBRATION_WU, validators=2000,
@@ -372,10 +373,11 @@ def main() -> None:
     parser.add_argument("--workers", type=int, nargs="+", default=list(DEFAULT_WORKERS))
     parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=list(WORKLOADS))
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
-    parser.add_argument("--ops-per-wu", type=int, default=256)
+    parser.add_argument("--ops-per-wu", type=int, default=4096)
     parser.add_argument("--target-window-ms", type=int, default=200)
     parser.add_argument("--max-compute-mib", type=int, default=1024)
-    parser.add_argument("--budget-hours", type=float, default=11)
+    parser.add_argument("--budget-hours", type=float, default=0,
+                        help="Optional campaign-start time cap; 0 disables it")
     args = parser.parse_args()
     if (not args.workers or len(set(args.workers)) != len(args.workers)
             or set(args.workers) - set(WORKERS)
