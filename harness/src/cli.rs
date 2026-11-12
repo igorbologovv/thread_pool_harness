@@ -116,6 +116,10 @@ pub struct Cli {
     #[arg(long)]
     pub operations_per_work_unit: Option<NonZeroUsize>,
 
+    /// Optional cap on distinct compute-heavy matrix input pairs (default: unique pairs).
+    #[arg(long)]
+    pub compute_input_pairs: Option<NonZeroUsize>,
+
     /// Total BLS validator-set size.
     #[arg(long, default_value = "2000")]
     pub validators: NonZeroUsize,
