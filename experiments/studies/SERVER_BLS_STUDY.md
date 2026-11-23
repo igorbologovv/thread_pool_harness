@@ -4,7 +4,7 @@ This branch adds a **single command** to calibrate the server, size/create a BLS
 
 ## Setup
 
-Linux, Python 3.11+, Rust/Cargo, git, lscpu and perf are required. Clone `threadance` next to `thread_pool_harness` because the harness depends on `../../threadance`. Run as a **regular user** who is allowed to access `perf stat -e task-clock`; the script does not run sudo or modify the kernel. A quiet/dedicated machine with >=24 allowed logical CPUs is recommended. Check CPU topology, NUMA, SMT and thermals before interpreting results.
+Linux, Python 3.11+, Rust/Cargo, git, lscpu and perf are required. Clone `threadance` next to `thread_pool_harness` because the harness depends on `../../threadance`. Run **--check** on any development machine without calibration. For **--plan-only** and the full experiment, use a **regular user** on the 24+-CPU server who is allowed to access `perf stat -e task-clock`; the script does not run sudo or modify the kernel. A quiet/dedicated machine with >=24 allowed logical CPUs is recommended. Check CPU topology, NUMA, SMT and thermals before interpreting results.
 
 ```bash
 mkdir -p ~/benchmarks
@@ -14,7 +14,8 @@ git clone https://github.com/igorbologovv/thread_pool_harness.git
 cd thread_pool_harness
 git switch experiment/bls-server-24w-autoprep
 
-bash run-server.sh --plan-only  # calibrates CPU and creates a frozen plan
+bash run-server.sh --check      # static matrix validation (also works on 16-CPU laptop)
+bash run-server.sh --plan-only  # server only: calibrates CPU and freezes a plan
 bash run-server.sh              # starts or resumes all campaigns
 ```
 
