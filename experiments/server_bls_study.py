@@ -137,7 +137,16 @@ def work_units_for(workers, service_us):
 def definitions(service_us):
     template = tomllib.loads(
         (ROOT / "experiments" / "queue_topology" / "experiment.toml").read_text())
-    template["experiment"]["profile"] = "standard"
+    template["experiment"]["profile"] = "deep"
+    # Two independent perf passes keep primary metrics comparable to the thesis,
+    # while collecting cache misses without multiplexing the primary hardware counters.
+    template["perf"] = {"passes": [
+        {"name": "standard", "events": [
+            "task-clock", "cycles", "instructions", "context-switches",
+            "cpu-migrations", "branch-misses"]},
+        {"name": "cache", "events": [
+            "task-clock", "cache-references", "cache-misses"]},
+    ]}
     template["workload"].update(
         validators=2000, signers_per_certificate=1600,
         certificates_per_work_unit=1, workload_seed=1, queue_capacity=64,
@@ -188,7 +197,7 @@ def definitions(service_us):
         workers=list(WORKERS), modes=list(MODES),
         window_seconds=WINDOW_S, headroom=HEADROOM,
         campaigns=len(files), conditions=7 * 6 * 31,
-        invocations=20 * 7 * 6 * 31, measured_runs=2 * 20 * 7 * 6 * 31)
+        invocations=20 * 7 * 6 * 31, measured_runs=2 * 2 * 20 * 7 * 6 * 31)
 
 
 def save_plan(files, summary, calibration):
@@ -283,7 +292,8 @@ def saturated_references(saturated_files):
         values = {}
         with (folder / "analysis_raw_runs.csv").open(newline="") as stream:
             for row in csv.DictReader(stream):
-                values.setdefault(row["configuration"], []).append(float(row["throughput"]))
+                if row["perf_pass"] == "standard":
+                    values.setdefault(row["configuration"], []).append(float(row["throughput"]))
         if len(values) != 6 or any(len(runs) != 40 for runs in values.values()):
             raise RuntimeError(f"Expected six schedulers x 40 saturated runs for w={workers}")
         means = {config: statistics.mean(runs) for config, runs in values.items()}
