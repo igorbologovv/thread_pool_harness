@@ -347,11 +347,50 @@ def paced_definitions(files, references):
     LOG.info("Paced dataset size: %d; old cache remains intact if a larger dataset is necessary", dataset_n)
     return paced
 
+def static_check():
+    """Validate study dimensions without calibration, perf, disk writes or 24 CPUs.
+
+    The service time here is deliberately illustrative: no real server-specific
+    WU counts, arrival rates or dataset sizes are determined by this command.
+    """
+    files, summary = definitions(1000.0)
+    invocations = 0
+    for _, data in files:
+        if tomllib.loads(render_toml(data)) != data:
+            raise RuntimeError("Generated campaign fails TOML round-trip")
+        plan = campaign.make_plan(data, 1000.0)
+        expected = BLOCKS * 6 * (
+            1 if data["delivery"]["mode"] == "all-at-once" else len(LOADS))
+        if len(plan) != expected:
+            raise RuntimeError("Campaign plan size does not match declared dimensions")
+        invocations += len(plan)
+    if invocations != summary["invocations"]:
+        raise RuntimeError("Study invocation total does not match actual campaign plans")
+    return {
+        "status": "OK: static study check only; no benchmark runs or calibration",
+        "workers": list(WORKERS),
+        "modes": list(MODES),
+        "paced_load_percent": [round(rho * 100) for rho in LOADS],
+        "blocks": BLOCKS,
+        "campaigns": len(files),
+        "conditions": summary["conditions"],
+        "invocations": invocations,
+        "measured_physical_runs": summary["measured_runs"],
+        "note": "Server dataset size and arrival rates are determined only on the server.",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan-only", action="store_true",
-                        help="Calibrate, size and freeze the study without collecting benchmark runs")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_true",
+                        help="Validate the matrix locally without perf, calibration or a 24-CPU host")
+    action.add_argument("--plan-only", action="store_true",
+                        help="Calibrate and freeze server-specific plans without collecting benchmark runs")
     args = parser.parse_args()
+    if args.check:
+        print(json.dumps(static_check(), indent=2))
+        return
     LOG.info("Logging to %s", log_setup())
     try:
         preflight()
