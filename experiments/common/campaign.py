@@ -108,6 +108,10 @@ def read_definition(path: Path) -> dict:
         raise ValueError("Scheduled delivery requires arrival_rates or rho")
     if d.get("arrival_rates") and d.get("rho"):
         raise ValueError("Use arrival_rates OR rho, not both")
+    if "saturated_reference_wu_s" in d:
+        reference = float(d["saturated_reference_wu_s"])
+        if not d.get("rho") or not math.isfinite(reference) or reference <= 0:
+            raise ValueError("saturated_reference_wu_s requires rho and a finite positive reference throughput")
     if any(float(v) <= 0 for v in d.get("arrival_rates", [])):
         raise ValueError("Arrival rates must be positive")
     if any(not 0 < float(v) < 1 for v in d.get("rho", [])):
@@ -195,8 +199,12 @@ def make_plan(data: dict, service_us: float | None) -> list[dict]:
     if d.get("rho"):
         if not service_us or service_us <= 0:
             raise ValueError("rho requires a valid single-thread service-time calibration")
-        rates.extend((float(rho), float(rho) * int(w["workers"]) * 1e6 / service_us)
-                     for rho in d["rho"])
+        # The server replication uses measured all-at-once throughput as C_w.
+        # Existing studies retain their original workers / service_us behavior.
+        capacity = float(d.get(
+            "saturated_reference_wu_s", int(w["workers"]) * 1e6 / service_us
+        ))
+        rates.extend((float(rho), float(rho) * capacity) for rho in d["rho"])
     base = []
     for config, (rho, rate) in itertools.product(data["configurations"], rates):
         spins = config.get("spin_us", [0])
