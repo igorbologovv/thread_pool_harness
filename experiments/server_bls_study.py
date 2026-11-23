@@ -6,6 +6,8 @@ Never invokes sudo, changes host permissions or overwrites results.
 from __future__ import annotations
 
 import argparse
+import csv
+import statistics
 import json
 import logging
 import math
@@ -18,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from experiments.common import campaign
+from experiments.common.analysis import analyze
 from experiments.common.bls_dataset_identity import (
     config_from_experiment, expected_dataset_path, identify_dataset,
 )
@@ -235,7 +238,7 @@ def verify_dataset(first):
              identity.path, identity.size_bytes, identity.sha256)
 
 
-def collect_all(files):
+def collect_all(files, *, report=False):
     CAMPAIGNS.mkdir(parents=True, exist_ok=True)
     for index, (definition, data) in enumerate(files, 1):
         name = data["experiment"]["name"]
@@ -261,9 +264,76 @@ def collect_all(files):
         if folder is None or not completed(folder, expected):
             raise RuntimeError(f"Campaign incomplete: {name}")
         LOG.info("Validated complete campaign: %s", folder)
-    LOG.info("STAGE 5/5: Validate SQLite measurements and generate statistical reports")
-    LOG.info("Report: %s", generate_report(CAMPAIGNS))
+    if report:
+        LOG.info("STAGE 5/5: Validate SQLite measurements and generate statistical reports")
+        LOG.info("Report: %s", generate_report(CAMPAIGNS))
 
+
+
+def saturated_references(saturated_files):
+    """Measure common C_w, averaging each scheduler's mean saturated throughput."""
+    references = {}
+    details = {}
+    for definition, data in saturated_files:
+        workers = data["workload"]["workers"]
+        folder = existing_campaign(data["experiment"]["name"], definition, CAMPAIGNS)
+        if folder is None:
+            raise RuntimeError(f"Cannot find completed saturated campaign for w={workers}")
+        analyze(folder)
+        values = {}
+        with (folder / "analysis_raw_runs.csv").open(newline="") as stream:
+            for row in csv.DictReader(stream):
+                values.setdefault(row["configuration"], []).append(float(row["throughput"]))
+        if len(values) != 6 or any(len(runs) != 40 for runs in values.values()):
+            raise RuntimeError(f"Expected six schedulers x 40 saturated runs for w={workers}")
+        means = {config: statistics.mean(runs) for config, runs in values.items()}
+        reference = statistics.mean(means.values())
+        if not math.isfinite(reference) or reference <= 0:
+            raise RuntimeError(f"Invalid measured saturated capacity for w={workers}")
+        references[str(workers)] = reference
+        details[str(workers)] = {"reference_throughput_wu_s": reference,
+                                 "mean_by_scheduler": means, "campaign": str(folder)}
+        spread = 100 * (max(means.values()) - min(means.values())) / reference
+        LOG.info("SATURATED w=%d: measured Cw = %.2f WU/s; scheduler spread = %.2f%%",
+                 workers, reference, spread)
+        if spread > 5:
+            LOG.warning("Large cross-scheduler saturation spread at w=%d; common Cw may hide different scheduler headroom", workers)
+    path = DEFINITIONS / "saturation_references.json"
+    content = json.dumps(details, sort_keys=True, indent=2) + "\n"
+    if path.exists() and path.read_text() != content:
+        raise RuntimeError("Saturated references differ from frozen prior results")
+    if not path.exists():
+        path.write_text(content)
+    return references
+
+
+def paced_definitions(files, references):
+    """Use measured Cw for rho. Validate arrival window, grow cache if needed."""
+    paced = [(path, deepcopy(data)) for path, data in files
+             if data["delivery"]["mode"] != "all-at-once"]
+    highest = max(MIN_DATASET_N, *(
+        max(data["workload"]["work_units"],
+            math.ceil(WINDOW_S * HEADROOM * max(LOADS) *
+                      references[str(data["workload"]["workers"])]) + 1)
+        for _, data in paced
+    ))
+    dataset_n = ((highest + 999) // 1000) * 1000
+    if dataset_n > MAX_DATASET_N:
+        raise RuntimeError(f"Measured saturation requires {dataset_n} certificates; safety limit {MAX_DATASET_N}")
+    for _, data in paced:
+        workers = data["workload"]["workers"]
+        capacity = references[str(workers)]
+        required = math.ceil(WINDOW_S * HEADROOM * max(LOADS) * capacity) + 1
+        data["workload"]["work_units"] = max(data["workload"]["work_units"], required)
+        data["workload"]["dataset_work_units"] = dataset_n
+        data["delivery"]["saturated_reference_wu_s"] = capacity
+        actual_window = (data["workload"]["work_units"] - 1) / (max(LOADS) * capacity)
+        if actual_window < WINDOW_S:
+            raise AssertionError("Scheduled window too short")
+        LOG.info("PACE w=%d: measured Cw=%.2f; %d distinct WU/run; minimum scheduled window=%.3fs",
+                 workers, capacity, data["workload"]["work_units"], actual_window)
+    LOG.info("Paced dataset size: %d; old cache remains intact if a larger dataset is necessary", dataset_n)
+    return paced
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -276,12 +346,22 @@ def main():
         os.environ["RUSTFLAGS"] = "-C target-cpu=native"
         calibration, service_us = calibrated()
         files, summary = definitions(service_us)
-        save_plan(files, summary, calibration)
+        saturated = [(path, data) for path, data in files
+                     if data["delivery"]["mode"] == "all-at-once"]
+        save_plan(saturated, summary, calibration)
         if args.plan_only:
             LOG.info("Plan-only: no main dataset generation or benchmark runs")
             return
-        verify_dataset(files[0])
-        collect_all(files)
+        saturated = [(path, data) for path, data in files
+                     if data["delivery"]["mode"] == "all-at-once"]
+        LOG.info("Seven saturated-throughput campaigns run first; paced rates are based on measured Cw")
+        verify_dataset(saturated[0])
+        collect_all(saturated)
+        references = saturated_references(saturated)
+        paced = paced_definitions(files, references)
+        save_plan(paced, summary, calibration)
+        verify_dataset(paced[0])
+        collect_all(paced, report=True)
         LOG.info("SUCCESS: completed the server study")
     except BaseException:
         LOG.exception("STOPPED. Results preserved. Rerun same command to resume.")
