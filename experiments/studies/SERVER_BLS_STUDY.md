@@ -33,9 +33,9 @@ bash run-server.sh              # starts or resumes all campaigns
 - **Schedulers:** Rayon, Bevy, MPMC Spin(0), MPMC Agave, RTRB b1, RTRB b2.
 - **Modes:** all-at-once, fixed-arrivals, bursty-arrivals.
 - **Paced offered-load levels:** 25%, 30%, 35%, ..., 95%, inclusive (15 levels).
-- **Per condition:** 20 randomized blocks, **4 warmups per invocation**, 2 measured repetitions. Two custom perf passes: standard (`task-clock`, `cycles`, `instructions`, `context-switches`, `cpu-migrations`, `branch-misses`) and cache (`task-clock`, `cache-references`, `cache-misses`), with reversed pass order in alternating blocks.
+- **Per condition:** 40 randomized blocks, **4 warmups per invocation**, 2 measured repetitions. Two custom perf passes: standard (`task-clock`, `cycles`, `instructions`, `context-switches`, `cpu-migrations`, `branch-misses`) and cache (`task-clock`, `cache-references`, `cache-misses`), with reversed pass order in alternating blocks.
 - **BLS work:** 2000 validators, 1600 signers, 1 certificate/WU, input seed 1.
-- **Total:** 1302 distinct conditions, 26040 invocations, **104160 measured physical runs** across the two perf passes, plus warmups.
+- **Total:** 1302 distinct conditions, 52080 invocations, **208320 measured physical runs** across the two perf passes, plus warmups.
 
 At 2 workers fewer unique WU are executed than at 24 workers. All campaigns use the same deterministic dataset; every single run verifies distinct certificates, but the same certificate set can be reused across runs.
 
