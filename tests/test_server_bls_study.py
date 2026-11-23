@@ -1,7 +1,8 @@
 """Pure planning checks for the server BLS study (no benchmarks executed)."""
-import math
 import tomllib
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from experiments import server_bls_study as study
 from experiments.common.campaign import read_definition
@@ -47,6 +48,10 @@ class ServerStudyPlanTests(unittest.TestCase):
             else:
                 self.assertEqual(data["delivery"]["rho"], list(study.LOADS))
             self.assertEqual(path.suffix, ".toml")
+            with TemporaryDirectory() as folder:
+                definition = Path(folder) / path.name
+                definition.write_text(study.render_toml(data))
+                self.assertEqual(read_definition(definition), data)
 
     def test_excessive_dataset_is_refused(self):
         with self.assertRaises(RuntimeError):
