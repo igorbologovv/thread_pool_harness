@@ -173,7 +173,8 @@ def definitions(service_us):
              wait_policy="spin-then-park", spin_us=0,
              hot_first_backlog=2, queue_capacity=64),
     ]
-    sizes = {str(w): work_units_for(w, service_us) for w in WORKERS}
+    # Use JSON-stable lists; tuples would make frozen-plan equality fail on resume.
+    sizes = {str(w): list(work_units_for(w, service_us)) for w in WORKERS}
     needed = max(MIN_DATASET_N, *(n for n, _ in sizes.values()))
     dataset_n = ((needed + 999) // 1000) * 1000
     if dataset_n > MAX_DATASET_N:
