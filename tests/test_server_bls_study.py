@@ -30,12 +30,16 @@ class ServerStudyPlanTests(unittest.TestCase):
         self.assertEqual(len(files), 21)
         self.assertEqual(summary["conditions"], 1302)
         self.assertEqual(summary["invocations"], 26040)
-        self.assertEqual(summary["measured_runs"], 52080)
+        self.assertEqual(summary["measured_runs"], 104160)
         for path, data in files:
             self.assertEqual(data["repetitions"]["warmup_runs_per_block"], 4)
             self.assertEqual(data["repetitions"]["blocks"], 20)
             self.assertEqual(data["repetitions"]["measured_runs_per_block"], 2)
             self.assertEqual(len(data["configurations"]), 6)
+            self.assertEqual(data["experiment"]["profile"], "deep")
+            self.assertEqual(len(data["perf"]["passes"]), 2)
+            self.assertEqual(data["perf"]["passes"][0]["name"], "standard")
+            self.assertIn("cache-misses", data["perf"]["passes"][1]["events"])
             self.assertEqual(data["workload"]["dataset_work_units"],
                              summary["dataset_work_units"])
             self.assertLessEqual(data["workload"]["work_units"],
@@ -52,6 +56,20 @@ class ServerStudyPlanTests(unittest.TestCase):
                 definition = Path(folder) / path.name
                 definition.write_text(study.render_toml(data))
                 self.assertEqual(read_definition(definition), data)
+
+    def test_paced_rate_uses_measured_capacity(self):
+        files, _ = study.definitions(150.0)
+        capacities = {str(w): 1000.0 * w for w in study.WORKERS}
+        paced = study.paced_definitions(files, capacities)
+        self.assertEqual(len(paced), 14)
+        for _, data in paced:
+            workers = data["workload"]["workers"]
+            self.assertEqual(data["delivery"]["saturated_reference_wu_s"],
+                             capacities[str(workers)])
+            self.assertGreaterEqual(
+                (data["workload"]["work_units"] - 1) /
+                (max(study.LOADS) * capacities[str(workers)]),
+                study.WINDOW_S)
 
     def test_excessive_dataset_is_refused(self):
         with self.assertRaises(RuntimeError):
