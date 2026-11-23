@@ -380,7 +380,7 @@ def validation_command(root: Path, calibration: Path, workload: dict) -> list[st
         "--calibration",
         str(calibration),
         "--expect-work-units",
-        str(workload["work_units"]),
+        str(workload.get("calibration_work_units", workload["work_units"])),
         "--expect-validators",
         str(workload["validators"]),
         "--expect-signers-per-certificate",
@@ -419,7 +419,7 @@ def config_from_experiment(data: dict, root: Path) -> tuple[CalibrationConfig, P
 
     return (
         CalibrationConfig(
-            work_units=int(workload["work_units"]),
+            work_units=int(workload.get("calibration_work_units", workload["work_units"])),
             validators=int(workload["validators"]),
             signers_per_certificate=int(workload["signers_per_certificate"]),
             certificates_per_work_unit=int(workload["certificates_per_work_unit"]),
