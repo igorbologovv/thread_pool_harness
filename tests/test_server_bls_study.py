@@ -12,6 +12,7 @@ class ServerStudyPlanTests(unittest.TestCase):
     def test_grid(self):
         self.assertEqual(study.WORKERS, (2, 4, 8, 12, 16, 20, 24))
         self.assertEqual(len(study.LOADS), 15)
+        self.assertEqual(study.BLOCKS, 40)
         self.assertEqual(study.LOADS[0], 0.25)
         self.assertEqual(study.LOADS[-1], 0.95)
         self.assertTrue(all(
@@ -29,11 +30,11 @@ class ServerStudyPlanTests(unittest.TestCase):
         files, summary = study.definitions(150.0)
         self.assertEqual(len(files), 21)
         self.assertEqual(summary["conditions"], 1302)
-        self.assertEqual(summary["invocations"], 26040)
-        self.assertEqual(summary["measured_runs"], 104160)
+        self.assertEqual(summary["invocations"], 52080)
+        self.assertEqual(summary["measured_runs"], 208320)
         for path, data in files:
             self.assertEqual(data["repetitions"]["warmup_runs_per_block"], 4)
-            self.assertEqual(data["repetitions"]["blocks"], 20)
+            self.assertEqual(data["repetitions"]["blocks"], 40)
             self.assertEqual(data["repetitions"]["measured_runs_per_block"], 2)
             self.assertEqual(len(data["configurations"]), 6)
             self.assertEqual(data["experiment"]["profile"], "deep")
