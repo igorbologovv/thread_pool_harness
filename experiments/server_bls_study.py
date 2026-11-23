@@ -33,6 +33,7 @@ from experiments.common.study_run import completed, existing_campaign
 
 ROOT = campaign.ROOT
 WORKERS = (2, 4, 8, 12, 16, 20, 24)
+BLOCKS = 40
 MODES = ("all-at-once", "fixed-arrivals", "bursty-arrivals")
 LOADS = tuple(i / 100 for i in range(25, 96, 5))
 CALIBRATION_N = 200
@@ -152,7 +153,7 @@ def definitions(service_us):
         certificates_per_work_unit=1, workload_seed=1, queue_capacity=64,
         calibration_work_units=CALIBRATION_N)
     template["repetitions"] = dict(
-        blocks=20, warmup_runs_per_block=4, measured_runs_per_block=2)
+        blocks=BLOCKS, warmup_runs_per_block=4, measured_runs_per_block=2)
     template["execution"] = dict(settle_seconds=3.0)
     template["analysis"]["reference_configuration"] = "rayon"
     template["artifacts"].update(
@@ -198,7 +199,7 @@ def definitions(service_us):
         workers=list(WORKERS), modes=list(MODES),
         window_seconds=WINDOW_S, headroom=HEADROOM,
         campaigns=len(files), conditions=7 * 6 * 31,
-        invocations=20 * 7 * 6 * 31, measured_runs=2 * 2 * 20 * 7 * 6 * 31)
+        invocations=BLOCKS * 7 * 6 * 31, measured_runs=2 * 2 * BLOCKS * 7 * 6 * 31)
 
 
 def save_plan(files, summary, calibration):
@@ -295,8 +296,8 @@ def saturated_references(saturated_files):
             for row in csv.DictReader(stream):
                 if row["perf_pass"] == "standard":
                     values.setdefault(row["configuration"], []).append(float(row["throughput"]))
-        if len(values) != 6 or any(len(runs) != 40 for runs in values.values()):
-            raise RuntimeError(f"Expected six schedulers x 40 saturated runs for w={workers}")
+        if len(values) != 6 or any(len(runs) != BLOCKS * 2 for runs in values.values()):
+            raise RuntimeError(f"Expected six schedulers x {BLOCKS * 2} saturated runs for w={workers}")
         means = {config: statistics.mean(runs) for config, runs in values.items()}
         reference = statistics.mean(means.values())
         if not math.isfinite(reference) or reference <= 0:
