@@ -72,6 +72,13 @@ class ServerStudyPlanTests(unittest.TestCase):
                 (max(study.LOADS) * capacities[str(workers)]),
                 study.WINDOW_S)
 
+    def test_static_check_requires_no_hardware_or_disk_writes(self):
+        result = study.static_check()
+        self.assertEqual(result["campaigns"], 21)
+        self.assertEqual(result["blocks"], 40)
+        self.assertEqual(result["invocations"], 52080)
+        self.assertEqual(result["measured_physical_runs"], 208320)
+
     def test_excessive_dataset_is_refused(self):
         with self.assertRaises(RuntimeError):
             study.definitions(1.0)
