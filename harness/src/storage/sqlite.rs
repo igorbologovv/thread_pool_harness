@@ -185,31 +185,20 @@ impl BenchmarkDb {
 
         // Persist experimental routing parameters and dependency identity.
         let extra_config_json = match cli.scheduler {
-            SchedulerKind::ThreadanceHotFirst | SchedulerKind::ThreadanceHotFirstRtrb => {
-                let local_threadance =
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../threadance");
-                Some(
-                    serde_json::json!({
-                        "hot_first_backlog": cli.hot_first_backlog,
-                        "ring_implementation": match cli.scheduler {
-                            SchedulerKind::ThreadanceHotFirst => "custom",
-                            SchedulerKind::ThreadanceHotFirstRtrb => "rtrb-0.4.0",
-                            _ => unreachable!(),
-                        },
-                        "ring_slots_per_worker": cli.hot_first_backlog,
-                        "threadance_git_commit": git_output(
-                            &local_threadance,
-                            &["rev-parse", "HEAD"],
-                        ),
-                        "threadance_git_dirty": git_output(
-                            &local_threadance,
-                            &["status", "--porcelain"],
-                        )
-                        .is_some_and(|output| !output.is_empty()),
-                    })
-                    .to_string(),
-                )
-            }
+            SchedulerKind::ThreadanceHotFirst | SchedulerKind::ThreadanceHotFirstRtrb => Some(
+                serde_json::json!({
+                    "hot_first_backlog": cli.hot_first_backlog,
+                    "ring_implementation": match cli.scheduler {
+                        SchedulerKind::ThreadanceHotFirst => "custom",
+                        SchedulerKind::ThreadanceHotFirstRtrb => "rtrb-0.4.0",
+                        _ => unreachable!(),
+                    },
+                    "ring_slots_per_worker": cli.hot_first_backlog,
+                    "threadance_git_commit": env!("THREADANCE_GIT_COMMIT"),
+                    "threadance_git_dirty": false,
+                })
+                .to_string(),
+            ),
             _ => None,
         };
 

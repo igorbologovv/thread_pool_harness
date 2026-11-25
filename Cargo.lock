@@ -1263,6 +1263,7 @@ dependencies = [
 [[package]]
 name = "threadance"
 version = "0.0.1"
+source = "git+https://github.com/igorbologovv/threadance.git?rev=7435d61195d7a0144cc3aa3d6bbe77ff179b929d#7435d61195d7a0144cc3aa3d6bbe77ff179b929d"
 dependencies = [
  "atomic-wait",
  "crossbeam-channel",

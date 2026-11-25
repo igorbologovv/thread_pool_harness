@@ -83,8 +83,6 @@ def preflight():
         cwd=ROOT, text=True).strip()
     if dirty:
         raise RuntimeError("Tracked source tree must be clean:\n" + dirty)
-    if not (ROOT.parent / "threadance" / "Cargo.toml").exists():
-        raise RuntimeError("Clone threadance beside thread_pool_harness first")
     for tool in ("rustc", "cargo", "perf", "lscpu"):
         if subprocess.run(["bash", "-lc", f"command -v {tool}"],
                           stdout=subprocess.DEVNULL).returncode:
