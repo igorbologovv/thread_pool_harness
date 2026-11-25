@@ -578,11 +578,13 @@ def collect(data: dict, definition: Path, campaign_dir: Path | None = None,
                 )
             if calibration:
                 shutil.copy2(calibration, out / "calibration.json")
+        lockfile = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        threadance = next(package for package in lockfile["package"]
+                          if package["name"] == "threadance")
         meta = dict(campaign_id=campaign, timestamp=datetime.now().astimezone().isoformat(),
                     git_commit=capture(["git", "rev-parse", "HEAD"]),
                     git_branch=capture(["git", "branch", "--show-current"]),
-                    threadance_commit=capture(["git", "-C", str(ROOT.parent / "threadance"),
-                                               "rev-parse", "HEAD"], check=False),
+                    threadance_commit=threadance["source"].rsplit("#", 1)[1],
                     kernel=capture(["uname", "-r"]), cpu=capture(["lscpu"], check=False),
                     perf=capture(["perf", "--version"], check=False),
                     binary_sha256=hashlib.sha256(RUST.read_bytes()).hexdigest(),
